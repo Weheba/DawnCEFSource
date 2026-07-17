@@ -33,11 +33,16 @@ do not contain this marker with the expected source pins and codec revision.
 - CEF commit: `82195616d8405e6081a0d90924707b82aa9e4141`
 - Chromium: `refs/tags/146.0.7680.179`
 - CEF/Chromium release branch: `7680`
-- Immutable source tag: `dawn-native-codecs.2`
+- Immutable source tag: `dawn-native-codecs.3`
 
 Keep the CEF and Chromium pins fixed when rebuilding this revision. A Chromium
 upgrade requires reapplying the patch, compiling both target platforms, and
 rerunning real H.264/AAC-LC playback through JCEF.
+
+Revision 3 keeps the production decoder configuration from revision 2 and
+corrects the AAC-LC regression fixture to use the MP4/M4A demuxer that this
+intentionally reduced FFmpeg build retains. It also keeps custom tagged
+checkouts on the local `7680` branch so CEF version generation remains valid.
 
 ## Windows build
 
@@ -45,7 +50,8 @@ Requirements:
 
 - Windows 10 or newer
 - Visual Studio 2022 with Desktop development with C++
-- Windows 11 SDK 10.0.26100
+- Windows 11 SDK 10.0.26100 with the versioned x64 DirectX/UWP tooling
+  components installed so `bin\10.0.26100.0\x64\dxil.dll` exists
 - 16 GB RAM minimum, 32 GB recommended
 - 155 GB free on a short build path with no spaces
 
@@ -59,9 +65,20 @@ From PowerShell:
 .\dawn\build-windows.ps1 -BuildRoot D:\DawnCEFBuild
 ```
 
+The Windows entrypoint defaults to four concurrent compile jobs to avoid
+saturating desktop CPUs. Override this deliberately with `-BuildJobs`; the
+value is forwarded to `autoninja -j` and Siso's local worker limit.
+The Visual Studio 2022 installation discovered by `vswhere` is also pinned for
+Chromium's GN toolchain, including when Build Tools is installed outside the
+default `Program Files` location.
+
 Add `-RunCefTests` for the upstream CEF test suite. The script creates a
 Release x64 minimal binary distribution and places it under
-`D:\DawnCEFBuild\chromium_git\chromium\src\cef\binary_distrib` by default.
+`D:\DawnCEFBuild\chromium\src\cef\binary_distrib` by default because
+`-BuildRoot` is passed directly to `automate-git.py` as `--download-dir`.
+If you point `-BuildRoot` at an existing legacy `chromium_git` wrapper
+directory, the script also resolves that layout when locating
+`media_unittests.exe` and the generated distribution.
 Add `-RunMediaTests` to compile and run the focused Media Foundation AAC-LC and
 xHE-AAC decoder regression tests.
 

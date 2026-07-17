@@ -747,6 +747,13 @@ parser.add_option('--checkout', dest='checkout',
                   help='Version of CEF to checkout. If not specified the '+\
                        'most recent remote version of the branch will be used.',
                   default='')
+parser.add_option(
+    '--cef-checkout-branch',
+    dest='cefcheckoutbranch',
+    help='Create or reset this local CEF branch at the selected checkout. '+\
+         'Use this for custom commits based on a numbered release branch so '+\
+         'CEF version generation retains the release branch component.',
+    default='')
 parser.add_option('--chromium-checkout', dest='chromiumcheckout',
                   help='Version of Chromium to checkout (Git '+\
                        'branch/hash/tag). This overrides the value specified '+\
@@ -899,6 +906,12 @@ parser.add_option(
     default=1,
     type="int",
     help='Keep going until N jobs fail.')
+parser.add_option(
+    '--build-jobs',
+    dest='buildjobs',
+    default=0,
+    type="int",
+    help='Limit concurrent local build jobs. Values less than 1 use autoninja defaults.')
 parser.add_option('--build-log-file',
                   action='store_true', dest='buildlogfile', default=False,
                   help='Write build logs to file. The file will be named '+\
@@ -1598,6 +1611,13 @@ elif os.path.exists(cef_dir) and not os.path.exists(cef_src_dir):
   # Restore the src/cef directory.
   copy_directory(cef_dir, cef_src_dir)
 
+if options.cefcheckoutbranch != '' and not options.nocefupdate and \
+   os.path.exists(cef_src_dir):
+  # Custom tags and hashes otherwise leave the CEF checkout detached. Keep a
+  # numbered local branch so make_version.py emits a valid release version.
+  run('%s checkout -B %s %s' %
+      (git_exe, options.cefcheckoutbranch, cef_desired_hash), cef_src_dir)
+
 # Restore the src/out directory.
 out_src_dir_exists = os.path.exists(out_src_dir)
 if os.path.exists(out_dir) and not out_src_dir_exists:
@@ -1675,6 +1695,8 @@ if not options.nobuild and (chromium_checkout_changed or \
   command = 'autoninja '
   if options.verbosebuild:
     command += '-v '
+  if options.buildjobs > 0:
+    command += '-j %d ' % options.buildjobs
   if options.buildfailurelimit != 1:
     command += '-k %d ' % options.buildfailurelimit
   command += '-C '

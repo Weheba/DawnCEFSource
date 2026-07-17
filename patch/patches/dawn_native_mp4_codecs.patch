@@ -196,13 +196,13 @@ diff --git media/filters/audio_decoder_unittest.cc media/filters/audio_decoder_u
 +    BUILDFLAG(USE_PROPRIETARY_CODECS)
 +constexpr TestParams kPlatformAacTestParams[] = {
 +    {AudioCodec::kAAC,
-+     "sfx.adts",
++     "sfx.m4a",
 +     {{
 +         {0, 23219, nullptr},
 +         {23219, 23219, nullptr},
 +         {46439, 23219, nullptr},
 +     }},
-+     0,
++     -1024,
 +     44100,
 +     CHANNEL_LAYOUT_MONO},
 +};

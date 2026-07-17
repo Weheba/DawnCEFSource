@@ -3,9 +3,9 @@ set -euo pipefail
 
 BUILD_ROOT="${1:-$HOME/DawnCEFBuild}"
 CEF_URL="${DAWN_CEF_URL:-https://github.com/Weheba/DawnCEFSource.git}"
-CEF_CHECKOUT="${DAWN_CEF_CHECKOUT:-dawn-native-codecs.2}"
+CEF_CHECKOUT="${DAWN_CEF_CHECKOUT:-dawn-native-codecs.3}"
 CHROMIUM_CHECKOUT="refs/tags/146.0.7680.179"
-DISTRIBUTION_SUFFIX="dawn-native-codecs.2"
+DISTRIBUTION_SUFFIX="dawn-native-codecs.3"
 REQUIRED_KB=$((155 * 1024 * 1024))
 BUILD_TARGETS="cefclient"
 
@@ -51,6 +51,7 @@ python3 "$AUTOMATE" \
   --branch=7680 \
   --url="$CEF_URL" \
   --checkout="$CEF_CHECKOUT" \
+  --cef-checkout-branch=7680 \
   --chromium-checkout="$CHROMIUM_CHECKOUT" \
   --no-chromium-history \
   --arm64-build \
@@ -64,8 +65,14 @@ python3 "$AUTOMATE" \
   --distrib-subdir-suffix="$DISTRIBUTION_SUFFIX" \
   --build-log-file
 
+CHROMIUM_SRC="$BUILD_ROOT/chromium/src"
+if [[ ! -f "$CHROMIUM_SRC/chrome/VERSION" && \
+      -f "$BUILD_ROOT/chromium_git/chromium/src/chrome/VERSION" ]]; then
+  CHROMIUM_SRC="$BUILD_ROOT/chromium_git/chromium/src"
+fi
+
 if [[ "${DAWN_RUN_MEDIA_TESTS:-0}" == "1" ]]; then
-  MEDIA_TESTS="$BUILD_ROOT/chromium_git/chromium/src/out/Release_GN_arm64/media_unittests"
+  MEDIA_TESTS="$CHROMIUM_SRC/out/Release_GN_arm64/media_unittests"
   if [[ ! -x "$MEDIA_TESTS" ]]; then
     echo "media_unittests was not produced: $MEDIA_TESTS" >&2
     exit 1
@@ -75,5 +82,5 @@ if [[ "${DAWN_RUN_MEDIA_TESTS:-0}" == "1" ]]; then
     --test-launcher-jobs=1
 fi
 
-find "$BUILD_ROOT/chromium_git/chromium/src/cef/binary_distrib" \
+find "$CHROMIUM_SRC/cef/binary_distrib" \
   -maxdepth 1 -name "*$DISTRIBUTION_SUFFIX*" -print
