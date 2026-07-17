@@ -2,7 +2,7 @@
 param(
     [string]$BuildRoot = "D:\DawnCEFBuild",
     [string]$CefUrl = "https://github.com/Weheba/DawnCEFSource.git",
-    [string]$CefCheckout = "dawn-native-codecs.1",
+    [string]$CefCheckout = "dawn-native-codecs.2",
     [switch]$RunCefTests,
     [switch]$RunMediaTests
 )
@@ -13,7 +13,7 @@ Set-StrictMode -Version Latest
 $requiredSdk = "10.0.26100.0"
 $requiredFreeBytes = 155GB
 $chromiumCheckout = "refs/tags/146.0.7680.179"
-$distributionSuffix = "dawn-native-codecs.1"
+$distributionSuffix = "dawn-native-codecs.2"
 
 $resolvedBuildRoot = [System.IO.Path]::GetFullPath($BuildRoot)
 if ($resolvedBuildRoot -match "\s") {
@@ -57,7 +57,7 @@ $arguments = @(
     $automate,
     "--download-dir=$resolvedBuildRoot",
     "--depot-tools-dir=$depotTools",
-    "--branch=146",
+    "--branch=7680",
     "--url=$CefUrl",
     "--checkout=$CefCheckout",
     "--chromium-checkout=$chromiumCheckout",

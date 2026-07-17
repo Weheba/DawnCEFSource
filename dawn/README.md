@@ -32,8 +32,8 @@ do not contain this marker with the expected source pins and codec revision.
 
 - CEF commit: `82195616d8405e6081a0d90924707b82aa9e4141`
 - Chromium: `refs/tags/146.0.7680.179`
-- CEF branch: `146`
-- Immutable source tag: `dawn-native-codecs.1`
+- CEF/Chromium release branch: `7680`
+- Immutable source tag: `dawn-native-codecs.2`
 
 Keep the CEF and Chromium pins fixed when rebuilding this revision. A Chromium
 upgrade requires reapplying the patch, compiling both target platforms, and

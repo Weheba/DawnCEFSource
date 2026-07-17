@@ -3,9 +3,9 @@ set -euo pipefail
 
 BUILD_ROOT="${1:-$HOME/DawnCEFBuild}"
 CEF_URL="${DAWN_CEF_URL:-https://github.com/Weheba/DawnCEFSource.git}"
-CEF_CHECKOUT="${DAWN_CEF_CHECKOUT:-dawn-native-codecs.1}"
+CEF_CHECKOUT="${DAWN_CEF_CHECKOUT:-dawn-native-codecs.2}"
 CHROMIUM_CHECKOUT="refs/tags/146.0.7680.179"
-DISTRIBUTION_SUFFIX="dawn-native-codecs.1"
+DISTRIBUTION_SUFFIX="dawn-native-codecs.2"
 REQUIRED_KB=$((155 * 1024 * 1024))
 BUILD_TARGETS="cefclient"
 
@@ -48,7 +48,7 @@ export GN_DEFINES='is_official_build=true proprietary_codecs=true media_use_ffmp
 python3 "$AUTOMATE" \
   --download-dir="$BUILD_ROOT" \
   --depot-tools-dir="$DEPOT_TOOLS" \
-  --branch=146 \
+  --branch=7680 \
   --url="$CEF_URL" \
   --checkout="$CEF_CHECKOUT" \
   --chromium-checkout="$CHROMIUM_CHECKOUT" \
