@@ -49,6 +49,10 @@ Requirements:
 - 16 GB RAM minimum, 32 GB recommended
 - 155 GB free on a short build path with no spaces
 
+After the Chromium checkout exists, interrupted builds may resume with at
+least 100 GB still free. The source tree already accounts for part of the
+fresh-build disk budget at that point.
+
 From PowerShell:
 
 ```powershell

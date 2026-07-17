@@ -11,7 +11,8 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $requiredSdk = "10.0.26100.0"
-$requiredFreeBytes = 155GB
+$requiredFreshFreeBytes = 155GB
+$requiredResumeFreeBytes = 100GB
 $chromiumCheckout = "refs/tags/146.0.7680.179"
 $distributionSuffix = "dawn-native-codecs.2"
 
@@ -21,8 +22,12 @@ if ($resolvedBuildRoot -match "\s") {
 }
 
 $drive = Get-PSDrive -Name ([System.IO.Path]::GetPathRoot($resolvedBuildRoot).TrimEnd(":\"))
+$chromiumVersionFile = Join-Path $resolvedBuildRoot "chromium\src\chrome\VERSION"
+$isResume = Test-Path -LiteralPath $chromiumVersionFile
+$requiredFreeBytes = if ($isResume) { $requiredResumeFreeBytes } else { $requiredFreshFreeBytes }
 if ($drive.Free -lt $requiredFreeBytes) {
-    throw "At least 155 GB must be free on $($drive.Name):; found $([math]::Round($drive.Free / 1GB, 1)) GB."
+    $buildState = if ($isResume) { "resuming the build" } else { "starting a fresh build" }
+    throw "At least $([math]::Round($requiredFreeBytes / 1GB)) GB must be free on $($drive.Name): when $buildState; found $([math]::Round($drive.Free / 1GB, 1)) GB."
 }
 
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
