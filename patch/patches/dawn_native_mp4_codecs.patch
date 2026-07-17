@@ -257,3 +257,23 @@ diff --git media/filters/audio_decoder_unittest.cc media/filters/audio_decoder_u
  #endif
  #endif
  
+diff --git third_party/dawn/third_party/gn/dxc/BUILD.gn third_party/dawn/third_party/gn/dxc/BUILD.gn
+index 0046348ef..1b0deb37b 100644
+--- third_party/dawn/third_party/gn/dxc/BUILD.gn
++++ third_party/dawn/third_party/gn/dxc/BUILD.gn
+@@ -2435,8 +2435,13 @@ executable("dxc") {
+ if (is_win) {
+   import("//build/config/win/visual_studio_version.gni")
+   copy("copy_dxil_dll") {
+-    sources =
+-        [ "$windows_sdk_path/bin/$windows_sdk_version/$target_cpu/dxil.dll" ]
++    dxil_path =
++        "$windows_sdk_path/bin/$windows_sdk_version/$target_cpu/dxil.dll"
++    if (!path_exists(dxil_path)) {
++      dxil_path = "$windows_sdk_path/Redist/D3D/$target_cpu/dxil.dll"
++    }
++    assert(path_exists(dxil_path), "Windows SDK dxil.dll was not found")
++    sources = [ dxil_path ]
+     outputs = [ "$root_out_dir/{{source_file_part}}" ]
+   }
+ }

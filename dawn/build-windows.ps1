@@ -2,7 +2,7 @@
 param(
     [string]$BuildRoot = "D:\DawnCEFBuild",
     [string]$CefUrl = "https://github.com/Weheba/DawnCEFSource.git",
-    [string]$CefCheckout = "dawn-native-codecs.3",
+    [string]$CefCheckout = "dawn-native-codecs.3.1",
     [ValidateRange(1, 64)]
     [int]$BuildJobs = 4,
     [switch]$RunCefTests,
@@ -76,9 +76,12 @@ if (-not (Test-Path -LiteralPath $sdkInclude)) {
     throw "Windows SDK $requiredSdk is required."
 }
 
-$sdkDxil = "${env:ProgramFiles(x86)}\Windows Kits\10\bin\$requiredSdk\x64\dxil.dll"
-if (-not (Test-Path -LiteralPath $sdkDxil)) {
-    throw "Windows SDK $requiredSdk x64 DirectX/UWP tools are required. Missing dxil.dll at '$sdkDxil'. Install the Windows 11 SDK $requiredSdk with the versioned x64 DirectX compiler/UWP tooling components."
+$sdkDxilCandidates = @(
+    "${env:ProgramFiles(x86)}\Windows Kits\10\bin\$requiredSdk\x64\dxil.dll",
+    "${env:ProgramFiles(x86)}\Windows Kits\10\Redist\D3D\x64\dxil.dll"
+)
+if (-not ($sdkDxilCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1)) {
+    throw "Windows SDK $requiredSdk x64 DirectX tools are required. Missing dxil.dll from both the versioned bin and Redist\D3D locations."
 }
 
 $python = Get-Command python -ErrorAction Stop

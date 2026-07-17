@@ -3,7 +3,7 @@ set -euo pipefail
 
 BUILD_ROOT="${1:-$HOME/DawnCEFBuild}"
 CEF_URL="${DAWN_CEF_URL:-https://github.com/Weheba/DawnCEFSource.git}"
-CEF_CHECKOUT="${DAWN_CEF_CHECKOUT:-dawn-native-codecs.3}"
+CEF_CHECKOUT="${DAWN_CEF_CHECKOUT:-dawn-native-codecs.3.1}"
 CHROMIUM_CHECKOUT="refs/tags/146.0.7680.179"
 DISTRIBUTION_SUFFIX="dawn-native-codecs.3"
 REQUIRED_KB=$((155 * 1024 * 1024))

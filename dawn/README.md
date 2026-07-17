@@ -33,7 +33,7 @@ do not contain this marker with the expected source pins and codec revision.
 - CEF commit: `82195616d8405e6081a0d90924707b82aa9e4141`
 - Chromium: `refs/tags/146.0.7680.179`
 - CEF/Chromium release branch: `7680`
-- Immutable source tag: `dawn-native-codecs.3`
+- Immutable source tag: `dawn-native-codecs.3.1`
 
 Keep the CEF and Chromium pins fixed when rebuilding this revision. A Chromium
 upgrade requires reapplying the patch, compiling both target platforms, and
@@ -50,8 +50,7 @@ Requirements:
 
 - Windows 10 or newer
 - Visual Studio 2022 with Desktop development with C++
-- Windows 11 SDK 10.0.26100 with the versioned x64 DirectX/UWP tooling
-  components installed so `bin\10.0.26100.0\x64\dxil.dll` exists
+- Windows 11 SDK 10.0.26100 with the x64 DirectX compiler/redist files
 - 16 GB RAM minimum, 32 GB recommended
 - 155 GB free on a short build path with no spaces
 
