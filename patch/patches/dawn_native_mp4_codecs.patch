@@ -1,0 +1,259 @@
+diff --git media/BUILD.gn media/BUILD.gn
+index 5edbb1e..7325f81 100644
+--- media/BUILD.gn
++++ media/BUILD.gn
+@@ -83,12 +83,6 @@ buildflag_header("media_buildflags") {
+   }
+ }
+ 
+-if (proprietary_codecs && media_use_ffmpeg) {
+-  assert(
+-      ffmpeg_branding != "Chromium",
+-      "proprietary codecs and ffmpeg_branding set to Chromium are incompatible")
+-}
+-
+ # Common configuration for targets in the media directory; these must not be
+ # exported since things like USE_NEON have different meanings elsewhere in the
+ # code base.
+diff --git media/filters/mac/audio_toolbox_audio_decoder.cc media/filters/mac/audio_toolbox_audio_decoder.cc
+index 275ac1d..5a8eaee 100644
+--- media/filters/mac/audio_toolbox_audio_decoder.cc
++++ media/filters/mac/audio_toolbox_audio_decoder.cc
+@@ -40,9 +40,9 @@ bool CanUseAudioToolbox(const AudioDecoderConfig& config) {
+     return true;
+   }
+ #endif
+-  // We use AudioToolbox for decoding xHE-AAC content and that's available on
+-  // macOS 10.15 or higher.
+-  return config.profile() == AudioCodecProfile::kXHE_AAC;
++  // AudioToolbox provides the system AAC decoder. Chromium uses the profile
++  // value only to distinguish xHE-AAC from the other MPEG-4 AAC profiles.
++  return config.codec() == AudioCodec::kAAC;
+ }
+ 
+ struct InputData {
+@@ -115,8 +115,8 @@ void AudioToolboxAudioDecoder::Initialize(const AudioDecoderConfig& config,
+                                           const OutputCB& output_cb,
+                                           const WaitingCB& waiting_cb) {
+   if (!CanUseAudioToolbox(config)) {
+-    DLOG(WARNING)
+-        << "Only xHE-AAC/AC3/E-AC3 decoding is supported by this decoder.";
++    DLOG(WARNING) << "Only AAC/AC3/E-AC3 decoding is supported by this "
++                     "decoder.";
+     std::move(init_cb).Run(DecoderStatus::Codes::kUnsupportedCodec);
+     return;
+   }
+@@ -248,9 +248,13 @@ bool AudioToolboxAudioDecoder::CreateDecoder(const AudioDecoderConfig& config) {
+ 
+   switch (config.codec()) {
+     case AudioCodec::kAAC: {
+-      // Input is xHE-AAC / USAC.
+-      CHECK_EQ(config.profile(), AudioCodecProfile::kXHE_AAC);
+-      input_format.mFormatID = kAudioFormatMPEGD_USAC;
++      CHECK(config.profile() == AudioCodecProfile::kUnknown ||
++            config.profile() == AudioCodecProfile::kXHE_AAC);
++      // The system decoder uses USAC for xHE-AAC and MPEG-4 AAC for AAC-LC,
++      // HE-AAC, and the remaining profiles represented by kUnknown.
++      input_format.mFormatID = config.profile() == AudioCodecProfile::kXHE_AAC
++                                   ? kAudioFormatMPEGD_USAC
++                                   : kAudioFormatMPEG4AAC;
+       magic_cookie = mp4::ESDescriptor::CreateEsds(config.extra_data());
+ 
+       // Have macOS fill in the rest of the input_format for us.
+@@ -382,30 +386,31 @@ bool AudioToolboxAudioDecoder::CreateDecoder(const AudioDecoderConfig& config) {
+       return false;
+     }
+ 
+-    // macOS doesn't provide a default target loudness. Use the value
+-    // recommended by Fraunhofer. AC3/E-AC3 doesn't support set this,
+-    // so limit this to xHE-AAC only.
+-    const Float32 kDefaultLoudness = -16.0;
+-    result = AudioConverterSetProperty(
+-        decoder_.get(), kAudioCodecPropertyProgramTargetLevel,
+-        sizeof(kDefaultLoudness), &kDefaultLoudness);
+-    if (result != noErr) {
+-      OSSTATUS_MEDIA_LOG(ERROR, result, media_log_)
+-          << "AudioConverterSetProperty() failed to set loudness.";
+-      return false;
+-    }
++    if (config.profile() == AudioCodecProfile::kXHE_AAC) {
++      // macOS doesn't provide a default target loudness. Use the value
++      // recommended by Fraunhofer for xHE-AAC.
++      const Float32 kDefaultLoudness = -16.0;
++      result = AudioConverterSetProperty(
++          decoder_.get(), kAudioCodecPropertyProgramTargetLevel,
++          sizeof(kDefaultLoudness), &kDefaultLoudness);
++      if (result != noErr) {
++        OSSTATUS_MEDIA_LOG(ERROR, result, media_log_)
++            << "AudioConverterSetProperty() failed to set loudness.";
++        return false;
++      }
+ 
+-    // Likewise set the effect type recommended by Fraunhofer. There doesn't
+-    // appear to be a key name available for this yet.
+-    // Values: 0=none, night=1, noisy=2, limited=3
+-    const UInt32 kDefaultEffectType = 3;
+-    result = AudioConverterSetProperty(decoder_.get(), 0x64726370 /* "drcp" */,
+-                                       sizeof(kDefaultEffectType),
+-                                       &kDefaultEffectType);
+-    if (result != noErr) {
+-      OSSTATUS_MEDIA_LOG(ERROR, result, media_log_)
+-          << "AudioConverterSetProperty() failed to set DRC effect type.";
+-      return false;
++      // Likewise set the effect type recommended by Fraunhofer. There doesn't
++      // appear to be a key name available for this yet.
++      // Values: 0=none, night=1, noisy=2, limited=3
++      const UInt32 kDefaultEffectType = 3;
++      result = AudioConverterSetProperty(
++          decoder_.get(), 0x64726370 /* "drcp" */,
++          sizeof(kDefaultEffectType), &kDefaultEffectType);
++      if (result != noErr) {
++        OSSTATUS_MEDIA_LOG(ERROR, result, media_log_)
++            << "AudioConverterSetProperty() failed to set DRC effect type.";
++        return false;
++      }
+     }
+   }
+ 
+diff --git media/filters/win/media_foundation_audio_decoder.cc media/filters/win/media_foundation_audio_decoder.cc
+index 5b0c6f1..90b0626 100644
+--- media/filters/win/media_foundation_audio_decoder.cc
++++ media/filters/win/media_foundation_audio_decoder.cc
+@@ -101,11 +101,13 @@ std::optional<MFT_REGISTER_TYPE_INFO> GetTypeInfo(
+ #endif
+ #if BUILDFLAG(USE_PROPRIETARY_CODECS)
+     case AudioCodec::kAAC:
++      // xHE-AAC requires Windows 11 22H2. AAC-LC and HE-AAC are supported by
++      // the Media Foundation AAC decoder on all Dawn-supported Windows builds.
+       if (config.profile() == AudioCodecProfile::kXHE_AAC &&
+-          base::win::GetVersion() >= base::win::Version::WIN11_22H2) {
+-        return MFT_REGISTER_TYPE_INFO{MFMediaType_Audio, MFAudioFormat_AAC};
++          base::win::GetVersion() < base::win::Version::WIN11_22H2) {
++        return std::nullopt;
+       }
+-      [[fallthrough]];
++      return MFT_REGISTER_TYPE_INFO{MFMediaType_Audio, MFAudioFormat_AAC};
+ #endif
+ #if BUILDFLAG(ENABLE_PLATFORM_AC4_AUDIO)
+     case AudioCodec::kAC4:
+diff --git media/mojo/services/gpu_mojo_media_client_mac.cc media/mojo/services/gpu_mojo_media_client_mac.cc
+index 1d1ec8a..9421537 100644
+--- media/mojo/services/gpu_mojo_media_client_mac.cc
++++ media/mojo/services/gpu_mojo_media_client_mac.cc
+@@ -32,6 +32,7 @@ class GpuMojoMediaClientMac final : public GpuMojoMediaClient {
+   std::optional<SupportedAudioDecoderConfigs>
+   GetPlatformSupportedAudioDecoderConfigs() final {
+     SupportedAudioDecoderConfigs audio_configs;
++    audio_configs.emplace_back(AudioCodec::kAAC, AudioCodecProfile::kUnknown);
+     audio_configs.emplace_back(AudioCodec::kAAC, AudioCodecProfile::kXHE_AAC);
+ #if BUILDFLAG(ENABLE_PLATFORM_AC3_EAC3_AUDIO)
+     audio_configs.emplace_back(AudioCodec::kAC3, AudioCodecProfile::kUnknown);
+diff --git media/mojo/services/gpu_mojo_media_client_win.cc media/mojo/services/gpu_mojo_media_client_win.cc
+index 8a4f1b8..eb39c17 100644
+--- media/mojo/services/gpu_mojo_media_client_win.cc
++++ media/mojo/services/gpu_mojo_media_client_win.cc
+@@ -101,9 +101,13 @@ class GpuMojoMediaClientWin final : public GpuMojoMediaClient {
+     }
+ #endif  // BUILDFLAG (ENABLE_PLATFORM_AC3_EAC3_AUDIO)
+ 
+-    if (base::win::GetVersion() >= base::win::Version::WIN11_22H2 &&
+-        InitializeMediaFoundation()) {
+-      audio_configs.emplace_back(AudioCodec::kAAC, AudioCodecProfile::kXHE_AAC);
++    if (InitializeMediaFoundation()) {
++      audio_configs.emplace_back(AudioCodec::kAAC,
++                                 AudioCodecProfile::kUnknown);
++      if (base::win::GetVersion() >= base::win::Version::WIN11_22H2) {
++        audio_configs.emplace_back(AudioCodec::kAAC,
++                                   AudioCodecProfile::kXHE_AAC);
++      }
+     }
+ 
+     return audio_configs;
+
+diff --git media/filters/audio_decoder_unittest.cc media/filters/audio_decoder_unittest.cc
+--- media/filters/audio_decoder_unittest.cc
++++ media/filters/audio_decoder_unittest.cc
+@@ -242,6 +242,7 @@ void AudioDecoderTest::Initialize() {
+         &config));
+ 
+-#if (BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_WIN)) && \
++#if (BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_MAC) || \
++     BUILDFLAG(IS_WIN)) && \
+     BUILDFLAG(USE_PROPRIETARY_CODECS)
+     // MediaCodec type requires config->extra_data() for AAC codec. For ADTS
+     // streams we need to extract it with a separate procedure.
+@@ -250,4 +251,5 @@ void AudioDecoderTest::Initialize() {
+     if ((decoder_type_ == AudioDecoderType::kMediaCodec ||
++         decoder_type_ == AudioDecoderType::kAudioToolbox ||
+          decoder_type_ == AudioDecoderType::kMediaFoundation) &&
+         params_.codec == AudioCodec::kAAC && config.extra_data().empty()) {
+       size_t sample_rate;
+@@ -490,6 +492,22 @@ constexpr TestParams kMediaCodecTestParams[] = {
+ };
+ #endif  // BUILDFLAG(IS_ANDROID)
+ 
++#if (BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)) && \
++    BUILDFLAG(USE_PROPRIETARY_CODECS)
++constexpr TestParams kPlatformAacTestParams[] = {
++    {AudioCodec::kAAC,
++     "sfx.adts",
++     {{
++         {0, 23219, nullptr},
++         {23219, 23219, nullptr},
++         {46439, 23219, nullptr},
++     }},
++     0,
++     44100,
++     CHANNEL_LAYOUT_MONO},
++};
++#endif
++
+ #if (BUILDFLAG(IS_MAC) || BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_WIN)) && \
+     BUILDFLAG(USE_PROPRIETARY_CODECS)
+ // Note: We don't test hashes for xHE-AAC content since the decoder is provided
+@@ -641,8 +659,8 @@ constexpr TestParams kSymphoniaTestParams[] = {
+ void AudioDecoderTest::SetReinitializeParams() {
+ #if (BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)) && \
+     BUILDFLAG(USE_PROPRIETARY_CODECS)
+-  // AudioToolbox and MediaFoundation only support xHE-AAC, so we can't use the
+-  // Opus params. We can instead just swap between the two test parameter sets.
++  // AudioToolbox and MediaFoundation only support AAC, so reinitialize with
++  // another platform AAC configuration instead of the Opus parameters.
+   if (decoder_type_ == AudioDecoderType::kAudioToolbox ||
+       decoder_type_ == AudioDecoderType::kMediaFoundation) {
+     set_params(params_.channel_layout == kXheAacTestParams[0].channel_layout
+@@ -805,19 +823,31 @@ INSTANTIATE_TEST_SUITE_P(MediaCodec,
+ INSTANTIATE_TEST_SUITE_P(MediaCodec,
+                          AudioDecoderTest,
+                          Combine(Values(AudioDecoderType::kMediaCodec),
+                                  ValuesIn(GetAndroidParams())));
+ #endif
+ 
++#if (BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)) && \
++    BUILDFLAG(USE_PROPRIETARY_CODECS)
++std::vector<TestParams> GetPlatformAacParams() {
++  std::vector<TestParams> params;
++  params.insert(params.end(), std::cbegin(kPlatformAacTestParams),
++                std::cend(kPlatformAacTestParams));
++  params.insert(params.end(), std::cbegin(kXheAacTestParams),
++                std::cend(kXheAacTestParams));
++  return params;
++}
++#endif
++
+ #if BUILDFLAG(USE_PROPRIETARY_CODECS)
+ #if BUILDFLAG(IS_MAC)
+ INSTANTIATE_TEST_SUITE_P(AudioToolbox,
+                          AudioDecoderTest,
+                          Combine(Values(AudioDecoderType::kAudioToolbox),
+-                                 ValuesIn(kXheAacTestParams)));
++                                 ValuesIn(GetPlatformAacParams())));
+ #elif BUILDFLAG(IS_WIN)
+ INSTANTIATE_TEST_SUITE_P(MediaFoundation,
+                          AudioDecoderTest,
+                          Combine(Values(AudioDecoderType::kMediaFoundation),
+-                                 ValuesIn(kXheAacTestParams)));
++                                 ValuesIn(GetPlatformAacParams())));
+ #endif
+ #endif
+ 
