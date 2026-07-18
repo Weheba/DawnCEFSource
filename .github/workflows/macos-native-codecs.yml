@@ -37,3 +37,9 @@ jobs:
           sysctl -n hw.memsize
           df -h / "$RUNNER_TEMP"
           df -Pk "$RUNNER_TEMP"
+
+          cpu_count="$(sysctl -n hw.logicalcpu)"
+          memory_gb="$(( $(sysctl -n hw.memsize) / 1024 / 1024 / 1024 ))"
+          free_gb="$(( $(df -Pk "$RUNNER_TEMP" | awk 'NR == 2 { print $4 }') / 1024 / 1024 ))"
+          xcode_version="$(xcodebuild -version | paste -sd ' ' -)"
+          echo "::notice title=runner-capacity::runner=${{ matrix.runner }} cpu=${cpu_count} memory_gb=${memory_gb} free_gb=${free_gb} xcode=${xcode_version}"
