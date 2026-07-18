@@ -21,9 +21,6 @@ jobs:
     runs-on: blacksmith-12vcpu-macos-26
     timeout-minutes: 240
     env:
-      CEF_BUILD_ROOT: ${{ runner.temp }}/DawnCEFBuild
-      JCEF_BUILD_ROOT: ${{ runner.temp }}/DawnJCEFBuild
-      RESULT_ROOT: ${{ runner.temp }}/dawn-native-codecs-macos
       VALIDATION_RELEASE_TAG: dawn-native-codecs.3-macos-validation.1
     steps:
       - name: Check out DawnCEF
@@ -55,6 +52,8 @@ jobs:
       - name: Build CEF and run AudioToolbox media tests
         shell: bash
         env:
+          CEF_BUILD_ROOT: ${{ runner.temp }}/DawnCEFBuild
+          RESULT_ROOT: ${{ runner.temp }}/dawn-native-codecs-macos
           DAWN_RUN_MEDIA_TESTS: "1"
         run: |
           set -euo pipefail
@@ -64,6 +63,8 @@ jobs:
       - name: Locate and verify the CEF distribution
         id: cef
         shell: bash
+        env:
+          CEF_BUILD_ROOT: ${{ runner.temp }}/DawnCEFBuild
         run: |
           set -euo pipefail
           chromium_src="$CEF_BUILD_ROOT/chromium/src"
@@ -81,6 +82,9 @@ jobs:
 
       - name: Build and package DawnJCEF
         shell: bash
+        env:
+          JCEF_BUILD_ROOT: ${{ runner.temp }}/DawnJCEFBuild
+          RESULT_ROOT: ${{ runner.temp }}/dawn-native-codecs-macos
         run: |
           set -euo pipefail
           export JAVA_HOME="$(/usr/libexec/java_home -v 21)"
@@ -95,6 +99,8 @@ jobs:
       - name: Verify packaged runtime
         id: runtime
         shell: bash
+        env:
+          RESULT_ROOT: ${{ runner.temp }}/dawn-native-codecs-macos
         run: |
           set -euo pipefail
           jar_path="$(find "$RESULT_ROOT" -maxdepth 1 -type f -name 'jcef-natives-macosx-arm64-*.jar' -print | head -n 1)"
@@ -129,8 +135,8 @@ jobs:
           path: |
             ${{ steps.runtime.outputs.jar_path }}
             ${{ steps.runtime.outputs.sha_path }}
-            ${{ env.RESULT_ROOT }}/validation.txt
-            ${{ env.RESULT_ROOT }}/jar-entries.txt
+            ${{ runner.temp }}/dawn-native-codecs-macos/validation.txt
+            ${{ runner.temp }}/dawn-native-codecs-macos/jar-entries.txt
           if-no-files-found: error
           retention-days: 7
 
@@ -138,6 +144,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          RESULT_ROOT: ${{ runner.temp }}/dawn-native-codecs-macos
         run: |
           set -euo pipefail
           if ! gh release view "$VALIDATION_RELEASE_TAG" >/dev/null 2>&1; then
