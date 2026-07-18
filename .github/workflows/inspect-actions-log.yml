@@ -1,0 +1,38 @@
+name: Inspect macOS codec build failure
+
+on:
+  push:
+    branches:
+      - codex/native-codecs-146
+    paths:
+      - .github/workflows/inspect-actions-log.yml
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      TARGET_JOB_ID: "88084128545"
+    steps:
+      - name: Surface the failed job tail
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/jobs/${TARGET_JOB_ID}/logs" \
+            --output job.log
+
+          tail -n 160 job.log | tail -c 16000 > failure-tail.log
+          payload="$(cat failure-tail.log)"
+          payload="${payload//'%'/'%25'}"
+          payload="${payload//$'\r'/'%0D'}"
+          payload="${payload//$'\n'/'%0A'}"
+          echo "::error file=.github/workflows/macos-native-codecs.yml,line=52,title=Blacksmith CEF failure::$payload"
