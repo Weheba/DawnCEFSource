@@ -1,0 +1,39 @@
+name: macOS native codec runner probe
+
+on:
+  push:
+    branches:
+      - codex/native-codecs-146
+    paths:
+      - .github/workflows/macos-native-codecs.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Probe ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - macos-15-xlarge
+          - blacksmith-12vcpu-macos-15
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    steps:
+      - name: Inspect build capacity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "runner=${{ matrix.runner }}"
+          uname -a
+          uname -m
+          system_profiler SPHardwareDataType
+          xcode-select -p
+          xcodebuild -version
+          sysctl -n hw.logicalcpu
+          sysctl -n hw.memsize
+          df -h / "$RUNNER_TEMP"
+          df -Pk "$RUNNER_TEMP"
