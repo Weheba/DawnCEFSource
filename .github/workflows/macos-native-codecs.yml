@@ -60,6 +60,26 @@ jobs:
           mkdir -p "$RESULT_ROOT"
           bash dawn/build-macos.sh "$CEF_BUILD_ROOT" 2>&1 | tee "$RESULT_ROOT/cef-build.log"
 
+      - name: Surface CEF or media-test failure
+        if: failure()
+        shell: bash
+        env:
+          RESULT_ROOT: ${{ runner.temp }}/dawn-native-codecs-macos
+        run: |
+          set -euo pipefail
+          log="$RESULT_ROOT/cef-build.log"
+          if [[ ! -f "$log" ]]; then
+            echo "::error file=.github/workflows/macos-native-codecs.yml,line=52,title=Blacksmith CEF failure::The build log was not created."
+            exit 0
+          fi
+
+          tail -n 160 "$log" | tail -c 16000 > failure-tail.log
+          payload="$(cat failure-tail.log)"
+          payload="${payload//'%'/'%25'}"
+          payload="${payload//$'\r'/'%0D'}"
+          payload="${payload//$'\n'/'%0A'}"
+          echo "::error file=.github/workflows/macos-native-codecs.yml,line=52,title=Blacksmith CEF failure::$payload"
+
       - name: Locate and verify the CEF distribution
         id: cef
         shell: bash

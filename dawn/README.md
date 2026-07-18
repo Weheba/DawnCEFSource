@@ -98,6 +98,11 @@ The script builds a Release arm64 minimal binary distribution.
 Set `DAWN_RUN_MEDIA_TESTS=1` to compile and run the equivalent AudioToolbox
 AAC-LC and xHE-AAC decoder regression tests.
 
+The macOS gate runs 45 AudioToolbox cases. It excludes three configuration-only
+assertions for Chromium's 29.4 kHz xHE-AAC fixture because the fixture expects
+an unknown channel layout while AudioToolbox resolves the stream as mono. The
+remaining tests retain decode, reset, and lifecycle coverage for that fixture.
+
 ## Verification
 
 The build is not accepted based on compilation alone. For every platform:
