@@ -55,7 +55,13 @@ intentionally reduced FFmpeg build retains. It also keeps custom tagged
 checkouts on the local `7680` branch so CEF version generation remains valid.
 
 Revision 4 adds the `ffmpeg_common.cc` AAC config fix, so plain `src=` MP4s
-keep their AAC track. It is the first revision built for macOS.
+keep their AAC track. It is the first revision built for macOS, and it also
+drops the ADTS header that Chromium's MP4 parser puts on every AAC frame of a
+Media Source stream before the frame reaches AudioToolbox (`AdtsHeaderSize` in
+`audio_toolbox_audio_decoder.cc`). AudioToolbox is set up for raw access units,
+so without it every Media Source AAC stream failed with
+`AudioConverterFillComplexBuffer() failed` ('bada'). Media Foundation on Windows
+receives the same headers; that path is unchanged in this revision.
 
 ## Windows build
 
@@ -118,10 +124,12 @@ the job count. Re-running the script resumes an interrupted build;
 Set `DAWN_RUN_MEDIA_TESTS=1` to compile and run the equivalent AudioToolbox
 AAC-LC and xHE-AAC decoder regression tests.
 
-The macOS gate runs 45 AudioToolbox cases. It excludes three configuration-only
-assertions for Chromium's 29.4 kHz xHE-AAC fixture because the fixture expects
-an unknown channel layout while AudioToolbox resolves the stream as mono. The
-remaining tests retain decode, reset, and lifecycle coverage for that fixture.
+The macOS gate runs the AudioToolbox suite for `sfx.m4a` (AAC-LC) and
+Chromium's three xHE-AAC fixtures, plus the FFmpegDemuxer AAC cases. Chromium's
+29.4 kHz mono xHE-AAC fixture declares an unknown channel layout while
+AudioToolbox reports mono, so the fixture's own setup check fails wherever it is
+loaded: every case of that fixture and the Reinitialize cases that switch to it.
+Those are excluded; the other cases decode and check timestamps.
 
 ## Verification
 
