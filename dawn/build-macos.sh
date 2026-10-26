@@ -12,8 +12,9 @@ set -euo pipefail
 #   DAWN_MAC_SDK_PATH      optional macOS SDK to build against instead of the
 #                          one in the selected Xcode.
 #   DAWN_CEF_CHECKOUT      CEF commit or tag to build (default below).
+#   DAWN_FETCH_ONLY=1      sync and patch the sources without building.
 #   DAWN_AUTOMATE_ARGS     extra automate-git.py flags, for example
-#                          "--no-build --no-distrib" to only fetch, or
+#                          "--force-update" to repair an interrupted sync, or
 #                          "--no-update" to resume a build without syncing.
 #   DAWN_RUN_MEDIA_TESTS=1 also build and run the AudioToolbox and
 #                          FFmpegDemuxer regression tests.
@@ -97,6 +98,11 @@ fi
 export GN_DEFINES
 export CEF_ARCHIVE_FORMAT=tar.bz2
 
+BUILD_FLAGS="--force-build --force-distrib"
+if [[ "${DAWN_FETCH_ONLY:-0}" == "1" ]]; then
+  BUILD_FLAGS="--no-build --no-distrib"
+fi
+
 echo "Building DawnCEF $CEF_CHECKOUT for macOS $MAC_ARCH with $BUILD_JOBS jobs"
 echo "GN_DEFINES=$GN_DEFINES"
 
@@ -122,6 +128,10 @@ python3 "$AUTOMATE" \
   --distrib-subdir-suffix="$DISTRIBUTION_SUFFIX" \
   --build-log-file \
   ${DAWN_AUTOMATE_ARGS:-}
+
+if [[ "${DAWN_FETCH_ONLY:-0}" == "1" ]]; then
+  exit 0
+fi
 
 CHROMIUM_SRC="$BUILD_ROOT/chromium/src"
 if [[ ! -f "$CHROMIUM_SRC/chrome/VERSION" && \
