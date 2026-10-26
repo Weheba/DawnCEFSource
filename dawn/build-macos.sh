@@ -74,6 +74,13 @@ if (( XCODE_MAJOR < 26 )); then
   exit 1
 fi
 
+# ANGLE compiles its Metal shaders at build time. Since Xcode 26 the Metal
+# compiler is a separate component.
+if ! xcrun metal --version >/dev/null 2>&1; then
+  echo "The Metal Toolchain is missing: xcodebuild -downloadComponent MetalToolchain" >&2
+  exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AUTOMATE="$SCRIPT_DIR/../tools/automate/automate-git.py"
 DEPOT_TOOLS="$BUILD_ROOT/depot_tools"
@@ -118,10 +125,9 @@ python3 "$AUTOMATE" \
   --no-chromium-history \
   "$ARCH_FLAG" \
   --no-debug-build \
-  --force-build \
+  $BUILD_FLAGS \
   --build-jobs="$BUILD_JOBS" \
   --build-target="$BUILD_TARGETS" \
-  --force-distrib \
   --minimal-distrib-only \
   --no-distrib-symbols \
   --no-distrib-docs \
