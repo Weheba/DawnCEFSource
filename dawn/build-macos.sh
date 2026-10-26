@@ -81,7 +81,8 @@ if [[ "${DAWN_RUN_MEDIA_TESTS:-0}" == "1" ]]; then
   # The upstream 29.4 kHz xHE-AAC fixture declares an unsupported layout, but
   # AudioToolbox resolves it to mono. Keep every decode case for that fixture
   # and exclude only the three tests whose sole failure is that config value.
-  AUDIO_TOOLBOX_FILTER='AudioToolbox/*-AudioToolbox/AudioDecoderTest.EncryptedBuffer/2:AudioToolbox/AudioDecoderTest.DecodeEOSFirst/2:AudioToolbox/AudioDecoderTest.Reset/2'
+  # The FFmpegDemuxer cases check that an MP4 AAC track survives demuxing without FFmpeg's AAC decoder.
+  AUDIO_TOOLBOX_FILTER='AudioToolbox/*:FFmpegDemuxerTest.Dawn_*:FFmpegDemuxerTest.Read_Mp4_Media_Track_Info-AudioToolbox/AudioDecoderTest.EncryptedBuffer/2:AudioToolbox/AudioDecoderTest.DecodeEOSFirst/2:AudioToolbox/AudioDecoderTest.Reset/2'
   "$MEDIA_TESTS" \
     --gtest_filter="$AUDIO_TOOLBOX_FILTER" \
     --test-launcher-jobs=1

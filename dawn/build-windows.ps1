@@ -140,7 +140,9 @@ if ($RunMediaTests) {
     if (-not (Test-Path -LiteralPath $mediaTests)) {
         throw "media_unittests was not produced: $mediaTests"
     }
-    & $mediaTests "--gtest_filter=MediaFoundation/*" "--test-launcher-jobs=1"
+    # The FFmpegDemuxer cases check that an MP4 AAC track survives demuxing without FFmpeg's AAC decoder;
+    # the MediaFoundation cases decode it.
+    & $mediaTests "--gtest_filter=MediaFoundation/*:FFmpegDemuxerTest.Dawn_*:FFmpegDemuxerTest.Read_Mp4_Media_Track_Info" "--test-launcher-jobs=1"
     if ($LASTEXITCODE -ne 0) {
         throw "Media Foundation AAC tests failed with exit code $LASTEXITCODE."
     }

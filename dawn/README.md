@@ -24,6 +24,16 @@ The patch also removes Chromium's build-time assertion that otherwise rejects
 this configuration. It does not add FFmpeg codec implementations or change
 CEF's public API.
 
+The patch also gives MP4 AAC tracks a sample format in
+`AVCodecContextToAudioDecoderConfig` (`media/ffmpeg/ffmpeg_common.cc`).
+Chromium-branded FFmpeg has no AAC decoder, so it never fills `sample_fmt`, and
+`FFmpegDemuxer` dropped every AAC track of a plain (`src=`) MP4 as an invalid
+config ("skipping invalid or unsupported audio track") before Media Foundation
+or AudioToolbox was ever asked. H.264 still played, so clips and creatives were
+silent rather than broken. Media Source playback was not affected, because
+Chromium's own MP4 parser builds that config. `FFmpegDemuxerTest.Dawn_*` covers
+it.
+
 Every generated binary distribution contains
 `dawn-codec-build.properties`. DawnJCEF refuses custom `CEF_ROOT` inputs that
 do not contain this marker with the expected source pins and codec revision.
@@ -109,6 +119,10 @@ The build is not accepted based on compilation alone. For every platform:
 
 1. Build DawnJCEF against this binary distribution.
 2. Confirm `video/mp4; codecs="avc1.64001f, mp4a.40.2"` is reported as playable.
+   That alone does not prove AAC decodes: also play an H.264 + AAC-LC MP4
+   through a plain `src=` and confirm `webkitAudioDecodedByteCount` grows and
+   the player's audio decoder is MediaFoundationAudioDecoder or
+   AudioToolboxAudioDecoder.
 3. Play the forced Adforge video creative through the Dawn ad rail.
 4. Confirm `loadeddata`, `playing`, advancing `currentTime`, and non-empty video
    dimensions in DevTools.
