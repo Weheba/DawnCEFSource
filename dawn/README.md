@@ -43,7 +43,7 @@ do not contain this marker with the expected source pins and codec revision.
 - CEF commit: `82195616d8405e6081a0d90924707b82aa9e4141`
 - Chromium: `refs/tags/146.0.7680.179`
 - CEF/Chromium release branch: `7680`
-- Immutable source tag: `dawn-native-codecs.3.1`
+- Immutable source tag: `dawn-native-codecs.4` (revision 3: `dawn-native-codecs.3.1`)
 
 Keep the CEF and Chromium pins fixed when rebuilding this revision. A Chromium
 upgrade requires reapplying the patch, compiling both target platforms, and
@@ -53,6 +53,9 @@ Revision 3 keeps the production decoder configuration from revision 2 and
 corrects the AAC-LC regression fixture to use the MP4/M4A demuxer that this
 intentionally reduced FFmpeg build retains. It also keeps custom tagged
 checkouts on the local `7680` branch so CEF version generation remains valid.
+
+Revision 4 adds the `ffmpeg_common.cc` AAC config fix, so plain `src=` MP4s
+keep their AAC track. It is the first revision built for macOS.
 
 ## Windows build
 
@@ -102,9 +105,16 @@ Requirements for this Chromium branch:
 
 ```bash
 ./dawn/build-macos.sh "$HOME/DawnCEFBuild"
+DAWN_MAC_ARCH=x64 ./dawn/build-macos.sh "$HOME/DawnCEFBuild"
 ```
 
-The script builds a Release arm64 minimal binary distribution.
+The script builds a Release minimal binary distribution for arm64, or for x64
+(cross-compiled on Apple silicon) with `DAWN_MAC_ARCH=x64`. Both architectures
+share one Chromium checkout. It defaults to six compile jobs and one link at a
+time, without debug info, so it fits a 16 GB Mac; `DAWN_BUILD_JOBS` overrides
+the job count. Re-running the script resumes an interrupted build;
+`DAWN_AUTOMATE_ARGS="--no-update"` skips the source sync when resuming, and
+`DAWN_MAC_SDK_PATH` selects a macOS SDK other than the selected Xcode's.
 Set `DAWN_RUN_MEDIA_TESTS=1` to compile and run the equivalent AudioToolbox
 AAC-LC and xHE-AAC decoder regression tests.
 

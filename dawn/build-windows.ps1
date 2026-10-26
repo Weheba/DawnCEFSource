@@ -2,7 +2,7 @@
 param(
     [string]$BuildRoot = "D:\DawnCEFBuild",
     [string]$CefUrl = "https://github.com/Weheba/DawnCEFSource.git",
-    [string]$CefCheckout = "dawn-native-codecs.3.1",
+    [string]$CefCheckout = "dawn-native-codecs.4",
     [ValidateRange(1, 64)]
     [int]$BuildJobs = 4,
     [switch]$RunCefTests,
@@ -16,7 +16,7 @@ $requiredSdk = "10.0.26100.0"
 $requiredFreshFreeBytes = 155GB
 $requiredResumeFreeBytes = 100GB
 $chromiumCheckout = "refs/tags/146.0.7680.179"
-$distributionSuffix = "dawn-native-codecs.3"
+$distributionSuffix = "dawn-native-codecs.4"
 
 function Get-AutomateChromiumSrcCandidates {
     param(
