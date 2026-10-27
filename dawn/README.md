@@ -80,6 +80,16 @@ media tests add `Dawn_AdtsFramedAac`, which decodes `sfx.m4a` a second time with
 an ADTS header on every frame, as Media Source delivers it, and expects the same
 audio.
 
+Revision 5 also fixes HE-AAC on macOS. For an HE-AAC or HE-AAC v2 config,
+AudioToolbox's `kAudioFormatProperty_FormatInfo` describes only the AAC-LC
+core: half the sample rate and 1024 frames per access unit, without SBR or PS.
+`AudioToolboxAudioDecoder` labelled that core with the stream's sample rate, so
+HE-AAC in MP4 played at twice its speed and pitch. It now decodes the richest
+layer in `kAudioFormatProperty_FormatList` that the system can decode, and it
+labels output with the rate the converter actually produces.
+`AudioToolboxHeAacTest.Dawn_DecodesSbrLayer` decodes eight HE-AAC access units
+and expects 2048 frames at 48 kHz from each one.
+
 ## Windows build
 
 Requirements:

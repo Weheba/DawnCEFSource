@@ -258,8 +258,10 @@ if [[ "${DAWN_RUN_MEDIA_TESTS:-0}" == "1" ]]; then
   # decodes and checks timestamps (and hashes for AAC-LC).
   # Dawn_AdtsFramedAac decodes sfx.m4a again with an ADTS header on every frame,
   # as Media Source delivers it, and expects the same audio.
+  # AudioToolboxHeAacTest.Dawn_DecodesSbrLayer checks that HE-AAC decodes its SBR layer (2048 frames at 48 kHz per
+  # access unit) instead of the AAC-LC core, which played at twice the speed.
   # The FFmpegDemuxer cases check that an MP4 AAC track survives demuxing without FFmpeg's AAC decoder.
-  AUDIO_TOOLBOX_FILTER='AudioToolbox/*:FFmpegDemuxerTest.Dawn_*:FFmpegDemuxerTest.Read_Mp4_Media_Track_Info-AudioToolbox/AudioDecoderTest.*/2:AudioToolbox/AudioDecoderTest.Reinitialize_*/1:AudioToolbox/AudioDecoderTest.Reinitialize_*/3'
+  AUDIO_TOOLBOX_FILTER='AudioToolbox/*:AudioToolboxHeAacTest.*:FFmpegDemuxerTest.Dawn_*:FFmpegDemuxerTest.Read_Mp4_Media_Track_Info-AudioToolbox/AudioDecoderTest.*/2:AudioToolbox/AudioDecoderTest.Reinitialize_*/1:AudioToolbox/AudioDecoderTest.Reinitialize_*/3'
   "$MEDIA_TESTS" \
     --gtest_filter="$AUDIO_TOOLBOX_FILTER" \
     --test-launcher-jobs=1
