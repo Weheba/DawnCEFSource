@@ -88,7 +88,9 @@ HE-AAC in MP4 played at twice its speed and pitch. It now decodes the richest
 layer in `kAudioFormatProperty_FormatList` that the system can decode, and it
 labels output with the rate the converter actually produces.
 `AudioToolboxHeAacTest.Dawn_DecodesSbrLayer` decodes eight HE-AAC access units
-and expects 2048 frames at 48 kHz from each one.
+and expects 2048 frames at 48 kHz from each one. On Windows,
+`MediaFoundationHeAacTest.Dawn_DecodesSbrLayer` decodes the same units and
+expects 48 kHz output that lasts as long as the input.
 
 ## Windows build
 

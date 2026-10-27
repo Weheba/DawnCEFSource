@@ -310,7 +310,7 @@ index 8a4f1b8..eb39c17 100644
      return audio_configs;
 
 diff --git media/filters/audio_decoder_unittest.cc media/filters/audio_decoder_unittest.cc
-index b7c9e77c2e..35913cd079 100644
+index b7c9e77c2e..dd273b1a7f 100644
 --- media/filters/audio_decoder_unittest.cc
 +++ media/filters/audio_decoder_unittest.cc
 @@ -6,6 +6,7 @@
@@ -432,7 +432,7 @@ index b7c9e77c2e..35913cd079 100644
    if (decoder_type_ == AudioDecoderType::kAudioToolbox ||
        decoder_type_ == AudioDecoderType::kMediaFoundation) {
      set_params(params_.channel_layout == kXheAacTestParams[0].channel_layout
-@@ -733,6 +786,156 @@ TEST_P(AudioDecoderTest, ProduceAudioSamples) {
+@@ -733,6 +786,207 @@ TEST_P(AudioDecoderTest, ProduceAudioSamples) {
    }
  }
  
@@ -469,7 +469,8 @@ index b7c9e77c2e..35913cd079 100644
 +}
 +#endif
 +
-+#if BUILDFLAG(IS_MAC) && BUILDFLAG(USE_PROPRIETARY_CODECS)
++#if (BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)) && \
++    BUILDFLAG(USE_PROPRIETARY_CODECS)
 +// HE-AAC with backward-compatible SBR signalling: the AudioSpecificConfig is
 +// AAC-LC at 24 kHz plus an SBR extension at 48 kHz, stereo. These are the first
 +// 8 access units of a -110 dBFS 600 Hz tone encoded with afconvert -d aach.
@@ -520,12 +521,12 @@ index b7c9e77c2e..35913cd079 100644
 +    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x70,
 +};
 +
-+// AudioToolbox must decode the SBR layer: 2048 frames at 48 kHz per access
-+// unit. The AAC-LC core alone gives 1024 frames per access unit, which played
-+// at the stream's 48 kHz runs at twice the speed and pitch.
-+TEST(AudioToolboxHeAacTest, Dawn_DecodesSbrLayer) {
-+  base::test::SingleThreadTaskEnvironment task_environment;
-+  AudioToolboxAudioDecoder decoder(std::make_unique<NullMediaLog>());
++namespace {
++
++// Decodes the access units above, configured the way FFmpegDemuxer configures
++// HE-AAC (48 kHz), and returns the output. |drain| ends with an EOS buffer.
++std::vector<scoped_refptr<AudioBuffer>> DecodeDawnHeAac(AudioDecoder* decoder,
++                                                        bool drain) {
 +  const AudioDecoderConfig config(
 +      AudioCodec::kAAC, kSampleFormatF32, CHANNEL_LAYOUT_STEREO, 48000,
 +      std::vector<uint8_t>(std::begin(kDawnHeAacAsc), std::end(kDawnHeAacAsc)),
@@ -533,7 +534,7 @@ index b7c9e77c2e..35913cd079 100644
 +
 +  bool initialized = false;
 +  std::vector<scoped_refptr<AudioBuffer>> outputs;
-+  decoder.Initialize(
++  decoder->Initialize(
 +      config, nullptr,
 +      base::BindOnce([](bool* ok, DecoderStatus status) { *ok = status.is_ok(); },
 +                     base::Unretained(&initialized)),
@@ -545,7 +546,10 @@ index b7c9e77c2e..35913cd079 100644
 +          base::Unretained(&outputs)),
 +      base::DoNothing());
 +  base::RunLoop().RunUntilIdle();
-+  ASSERT_TRUE(initialized);
++  EXPECT_TRUE(initialized);
++  if (!initialized) {
++    return outputs;
++  }
 +
 +  const base::span<const uint8_t> frames[] = {
 +      kDawnHeAacFrame0,
@@ -557,22 +561,44 @@ index b7c9e77c2e..35913cd079 100644
 +      kDawnHeAacFrame6,
 +      kDawnHeAacFrame7};
 +  const base::TimeDelta frame_duration = base::Microseconds(42667);
++  std::vector<scoped_refptr<DecoderBuffer>> buffers;
 +  for (size_t i = 0; i < std::size(frames); ++i) {
 +    scoped_refptr<DecoderBuffer> buffer = DecoderBuffer::CopyFrom(frames[i]);
 +    buffer->set_timestamp(frame_duration * static_cast<int>(i));
 +    buffer->set_duration(frame_duration);
 +    buffer->set_is_key_frame(true);
++    buffers.push_back(std::move(buffer));
++  }
++  if (drain) {
++    buffers.push_back(DecoderBuffer::CreateEOSBuffer());
++  }
++  for (size_t i = 0; i < buffers.size(); ++i) {
 +    bool decoded = false;
-+    decoder.Decode(
-+        std::move(buffer),
++    decoder->Decode(
++        std::move(buffers[i]),
 +        base::BindOnce([](bool* ok, DecoderStatus status) { *ok = status.is_ok(); },
 +                       base::Unretained(&decoded)));
 +    base::RunLoop().RunUntilIdle();
-+    ASSERT_TRUE(decoded) << "access unit " << i;
++    EXPECT_TRUE(decoded) << "buffer " << i;
 +  }
++  return outputs;
++}
++
++}  // namespace
++#endif
++
++#if BUILDFLAG(IS_MAC) && BUILDFLAG(USE_PROPRIETARY_CODECS)
++// AudioToolbox must decode the SBR layer: 2048 frames at 48 kHz per access
++// unit. The AAC-LC core alone gives 1024 frames per access unit, which played
++// at the stream's 48 kHz runs at twice the speed and pitch.
++TEST(AudioToolboxHeAacTest, Dawn_DecodesSbrLayer) {
++  base::test::SingleThreadTaskEnvironment task_environment;
++  AudioToolboxAudioDecoder decoder(std::make_unique<NullMediaLog>());
++  const std::vector<scoped_refptr<AudioBuffer>> outputs =
++      DecodeDawnHeAac(&decoder, /*drain=*/false);
 +
 +  // The converter trims its decoder delay from the first output.
-+  ASSERT_GE(outputs.size(), std::size(frames) - 1);
++  ASSERT_GE(outputs.size(), 7u);
 +  for (size_t i = 0; i < outputs.size(); ++i) {
 +    SCOPED_TRACE(base::StringPrintf("output %" PRIuS, i));
 +    EXPECT_EQ(48000, outputs[i]->sample_rate());
@@ -586,10 +612,35 @@ index b7c9e77c2e..35913cd079 100644
 +}
 +#endif
 +
++#if BUILDFLAG(IS_WIN) && BUILDFLAG(USE_PROPRIETARY_CODECS)
++// Media Foundation must also decode the SBR layer: 48 kHz output that lasts as
++// long as the input. The AAC-LC core alone gives half the frames.
++TEST(MediaFoundationHeAacTest, Dawn_DecodesSbrLayer) {
++  base::test::SingleThreadTaskEnvironment task_environment;
++  base::win::ScopedCOMInitializer com_initializer;
++  std::unique_ptr<AudioDecoder> decoder = MediaFoundationAudioDecoder::Create();
++  ASSERT_TRUE(decoder);
++  const std::vector<scoped_refptr<AudioBuffer>> outputs =
++      DecodeDawnHeAac(decoder.get(), /*drain=*/true);
++
++  ASSERT_FALSE(outputs.empty());
++  int frames = 0;
++  for (size_t i = 0; i < outputs.size(); ++i) {
++    SCOPED_TRACE(base::StringPrintf("output %" PRIuS, i));
++    EXPECT_EQ(48000, outputs[i]->sample_rate());
++    EXPECT_EQ(2, outputs[i]->channel_count());
++    frames += outputs[i]->frame_count();
++  }
++  // Eight access units of 2048 frames, less the decoder delay.
++  EXPECT_GT(frames, 6 * 2048);
++  EXPECT_LE(frames, 8 * 2048);
++}
++#endif
++
  TEST_P(AudioDecoderTest, Decode) {
    ASSERT_NO_FATAL_FAILURE(Initialize());
    Decode();
-@@ -808,17 +1011,29 @@ INSTANTIATE_TEST_SUITE_P(MediaCodec,
+@@ -808,17 +1062,29 @@ INSTANTIATE_TEST_SUITE_P(MediaCodec,
                                   ValuesIn(GetAndroidParams())));
  #endif
  
