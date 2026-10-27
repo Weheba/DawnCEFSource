@@ -9,6 +9,7 @@ The build intentionally uses:
 proprietary_codecs=true
 media_use_ffmpeg=true
 ffmpeg_branding="Chromium"
+media_use_openh264=false
 ```
 
 `media_use_ffmpeg` keeps Chromium's MP4 demuxing path. The Chromium-branded
@@ -19,6 +20,14 @@ Decode is delegated to the operating system:
 | --- | --- | --- | --- |
 | Windows | D3D11/DXVA | Media Foundation | Media Foundation on Windows 11 22H2+ |
 | macOS | VideoToolbox | AudioToolbox | AudioToolbox |
+
+`media_use_openh264=false` leaves out the OpenH264 software H.264 encoder that
+`proprietary_codecs` otherwise turns on for WebCodecs, MediaRecorder and WebRTC
+(`rtc_use_h264` follows it). Dawn's pages and ads only decode video. H.264
+encoding is left to the operating system's encoder where a page asks for it.
+Both build scripts fail when either GN arg resolves to anything but `false`, or
+when `OpenH264`, `H264EncoderImpl` or `OpenH264VideoEncoder` appears in a
+shipped binary.
 
 The patch also removes Chromium's build-time assertion that otherwise rejects
 this configuration. It does not add FFmpeg codec implementations or change
@@ -43,7 +52,7 @@ do not contain this marker with the expected source pins and codec revision.
 - CEF commit: `82195616d8405e6081a0d90924707b82aa9e4141`
 - Chromium: `refs/tags/146.0.7680.179`
 - CEF/Chromium release branch: `7680`
-- Immutable source tag: `dawn-native-codecs.4` (revision 3: `dawn-native-codecs.3.1`)
+- Immutable source tag: `dawn-native-codecs.5` (revision 3: `dawn-native-codecs.3.1`; revision 4 was not released)
 
 Keep the CEF and Chromium pins fixed when rebuilding this revision. A Chromium
 upgrade requires reapplying the patch, compiling both target platforms, and
@@ -62,6 +71,14 @@ Media Source stream before the frame reaches AudioToolbox (`AdtsHeaderSize` in
 so without it every Media Source AAC stream failed with
 `AudioConverterFillComplexBuffer() failed` ('bada'). Media Foundation on Windows
 receives the same headers; that path is unchanged in this revision.
+
+Revision 5 is revision 4 without OpenH264 (`media_use_openh264=false`; revision
+3 and 4 binaries contain it). The build scripts also check that the
+distribution is complete, because `make_distrib.py --allow-partial` otherwise
+writes one without the Release files when build output is missing. The macOS
+media tests add `Dawn_AdtsFramedAac`, which decodes `sfx.m4a` a second time with
+an ADTS header on every frame, as Media Source delivers it, and expects the same
+audio.
 
 ## Windows build
 

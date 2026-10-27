@@ -2,7 +2,7 @@
 param(
     [string]$BuildRoot = "D:\DawnCEFBuild",
     [string]$CefUrl = "https://github.com/Weheba/DawnCEFSource.git",
-    [string]$CefCheckout = "dawn-native-codecs.4",
+    [string]$CefCheckout = "dawn-native-codecs.5",
     [ValidateRange(1, 64)]
     [int]$BuildJobs = 4,
     [switch]$RunCefTests,
@@ -16,7 +16,125 @@ $requiredSdk = "10.0.26100.0"
 $requiredFreshFreeBytes = 155GB
 $requiredResumeFreeBytes = 100GB
 $chromiumCheckout = "refs/tags/146.0.7680.179"
-$distributionSuffix = "dawn-native-codecs.4"
+$distributionSuffix = "dawn-native-codecs.5"
+# Code that only the OpenH264 software H.264 encoder links in.
+$openH264Markers = @("OpenH264", "H264EncoderImpl", "OpenH264VideoEncoder")
+
+function Find-AsciiMarkers {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+        [Parameter(Mandatory)]
+        [string[]]$Markers
+    )
+
+    # Reads the file in chunks; the tail of each chunk is kept so that a marker
+    # split across two chunks is still found.
+    $latin1 = [System.Text.Encoding]::GetEncoding(28591)
+    $overlap = ($Markers | Measure-Object -Property Length -Maximum).Maximum - 1
+    $found = New-Object System.Collections.Generic.List[string]
+    $buffer = New-Object byte[] (16MB)
+    $tail = ""
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $text = $tail + $latin1.GetString($buffer, 0, $read)
+            foreach ($marker in $Markers) {
+                if (-not $found.Contains($marker) -and $text.Contains($marker)) {
+                    $found.Add($marker)
+                }
+            }
+            $tail = $text.Substring([Math]::Max(0, $text.Length - $overlap))
+        }
+    } finally {
+        $stream.Dispose()
+    }
+    return ,$found.ToArray()
+}
+
+function Assert-DawnDistribution {
+    param(
+        [Parameter(Mandatory)]
+        [string]$ChromiumSrc,
+        [Parameter(Mandatory)]
+        [string]$DistributionRoot
+    )
+
+    $distributions = @(Get-ChildItem -LiteralPath $DistributionRoot -Directory -Filter "cef_binary_*_windows64_${distributionSuffix}_minimal")
+    if ($distributions.Count -ne 1) {
+        throw "Expected one windows64 $distributionSuffix distribution, found $($distributions.Count)."
+    }
+    $distribution = $distributions[0].FullName
+
+    # automate-git.py passes --allow-partial to make_distrib.py for a Release-only
+    # build, which writes a distribution without the Release files when the build
+    # output is missing, so check that everything is there.
+    $requiredFiles = @(
+        "CMakeLists.txt",
+        "cmake\FindCEF.cmake",
+        "include\cef_version.h",
+        "libcef_dll\CMakeLists.txt",
+        "dawn-codec-build.properties",
+        "Release\bootstrap.exe",
+        "Release\bootstrapc.exe",
+        "Release\chrome_elf.dll",
+        "Release\d3dcompiler_47.dll",
+        "Release\dxcompiler.dll",
+        "Release\dxil.dll",
+        "Release\libcef.dll",
+        "Release\libcef.lib",
+        "Release\libEGL.dll",
+        "Release\libGLESv2.dll",
+        "Release\v8_context_snapshot.bin",
+        "Release\vk_swiftshader.dll",
+        "Release\vk_swiftshader_icd.json",
+        "Release\vulkan-1.dll",
+        "Resources\chrome_100_percent.pak",
+        "Resources\chrome_200_percent.pak",
+        "Resources\icudtl.dat",
+        "Resources\resources.pak",
+        "Resources\locales\en-US.pak"
+    )
+    foreach ($file in $requiredFiles) {
+        $path = Join-Path $distribution $file
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -eq 0) {
+            throw "The distribution is incomplete: $file is missing or empty."
+        }
+    }
+    $expectedRevision = (Get-Content -LiteralPath (Join-Path $PSScriptRoot "dawn-codec-build.properties") |
+        Where-Object { $_ -like "codec.revision=*" }) -replace '^codec\.revision=', ''
+    if (-not (Select-String -LiteralPath (Join-Path $distribution "dawn-codec-build.properties") `
+            -Pattern "^codec\.revision=$([regex]::Escape($expectedRevision))$" -Quiet)) {
+        throw "The distribution marker does not name $expectedRevision."
+    }
+
+    # No OpenH264: both GN args must resolve to false, and no OpenH264 or WebRTC
+    # software H.264 encoder code may be linked into the binaries.
+    $gn = Join-Path $ChromiumSrc "buildtools\win\gn.exe"
+    Push-Location -LiteralPath $ChromiumSrc
+    $previousPath = $env:PATH
+    try {
+        $env:PATH = "$depotTools;$env:PATH"
+        foreach ($arg in @("media_use_openh264", "rtc_use_h264")) {
+            $value = (& $gn args "out\Release_GN_x64" "--list=$arg" --short | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0 -or $value -ne "$arg = false") {
+                throw "$arg must be false: $value"
+            }
+        }
+    } finally {
+        $env:PATH = $previousPath
+        Pop-Location
+    }
+    $binaries = Get-ChildItem -LiteralPath (Join-Path $distribution "Release") -File |
+        Where-Object { $_.Extension -in @(".dll", ".exe") }
+    foreach ($binary in $binaries) {
+        $found = Find-AsciiMarkers -Path $binary.FullName -Markers $openH264Markers
+        if ($found.Count -gt 0) {
+            throw "OpenH264 is linked into $($binary.Name): $($found -join ', ')"
+        }
+    }
+    Write-Host "Distribution complete, OpenH264 absent: $distribution"
+}
 
 function Get-AutomateChromiumSrcCandidates {
     param(
@@ -93,7 +211,9 @@ $env:GYP_MSVS_VERSION = "2022"
 $env:GYP_MSVS_OVERRIDE_PATH = $visualStudio
 $env:vs2022_install = $visualStudio
 $env:CEF_ARCHIVE_FORMAT = "tar.bz2"
-$env:GN_DEFINES = 'is_official_build=true proprietary_codecs=true media_use_ffmpeg=true ffmpeg_branding="Chromium" use_thin_lto=false symbol_level=1 chrome_pgo_phase=0'
+# media_use_openh264=false leaves out the OpenH264 software H.264 encoder that
+# proprietary_codecs turns on by default; WebRTC's rtc_use_h264 follows it.
+$env:GN_DEFINES = 'is_official_build=true proprietary_codecs=true media_use_ffmpeg=true ffmpeg_branding="Chromium" media_use_openh264=false use_thin_lto=false symbol_level=1 chrome_pgo_phase=0'
 $buildTargets = "cefclient"
 if ($RunMediaTests) {
     $buildTargets += " media_unittests"
@@ -134,6 +254,8 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $chromiumSrcDir = Resolve-AutomateChromiumSrcDir -Root $resolvedBuildRoot
+$distributionRoot = Join-Path $chromiumSrcDir "cef\binary_distrib"
+Assert-DawnDistribution -ChromiumSrc $chromiumSrcDir -DistributionRoot $distributionRoot
 
 if ($RunMediaTests) {
     $mediaTests = Join-Path $chromiumSrcDir "out\Release_GN_x64\media_unittests.exe"
@@ -148,7 +270,6 @@ if ($RunMediaTests) {
     }
 }
 
-$distributionRoot = Join-Path $chromiumSrcDir "cef\binary_distrib"
 Get-ChildItem -LiteralPath $distributionRoot -Filter "*${distributionSuffix}*" |
     Sort-Object LastWriteTime -Descending |
     Select-Object FullName, Length, LastWriteTime

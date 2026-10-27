@@ -229,9 +229,27 @@ index 8a4f1b8..eb39c17 100644
      return audio_configs;
 
 diff --git media/filters/audio_decoder_unittest.cc media/filters/audio_decoder_unittest.cc
+index b7c9e77c2e..5bb1b28fe2 100644
 --- media/filters/audio_decoder_unittest.cc
 +++ media/filters/audio_decoder_unittest.cc
-@@ -242,6 +242,7 @@ void AudioDecoderTest::Initialize() {
+@@ -6,6 +6,7 @@
+ #include <stdint.h>
+ 
+ #include <memory>
++#include <optional>
+ #include <string_view>
+ #include <vector>
+ 
+@@ -57,6 +58,7 @@
+ #endif
+ 
+ #if BUILDFLAG(USE_PROPRIETARY_CODECS)
++#include "media/formats/mp4/aac.h"
+ #include "media/formats/mpeg/adts_stream_parser.h"
+ #endif
+ 
+@@ -243,11 +245,13 @@ class AudioDecoderTest
+         reader_->codec_context_for_testing(), EncryptionScheme::kUnencrypted,
          &config));
  
 -#if (BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_WIN)) && \
@@ -240,13 +258,66 @@ diff --git media/filters/audio_decoder_unittest.cc media/filters/audio_decoder_u
      BUILDFLAG(USE_PROPRIETARY_CODECS)
      // MediaCodec type requires config->extra_data() for AAC codec. For ADTS
      // streams we need to extract it with a separate procedure.
-@@ -250,4 +251,5 @@ void AudioDecoderTest::Initialize() {
      if ((decoder_type_ == AudioDecoderType::kMediaCodec ||
 +         decoder_type_ == AudioDecoderType::kAudioToolbox ||
           decoder_type_ == AudioDecoderType::kMediaFoundation) &&
          params_.codec == AudioCodec::kAAC && config.extra_data().empty()) {
        size_t sample_rate;
-@@ -490,6 +492,22 @@ constexpr TestParams kMediaCodecTestParams[] = {
+@@ -297,6 +301,15 @@ class AudioDecoderTest
+ 
+     scoped_refptr<DecoderBuffer> buffer =
+         DecoderBuffer::CopyFrom(AVPacketData(*packet));
++#if BUILDFLAG(IS_MAC) && BUILDFLAG(USE_PROPRIETARY_CODECS)
++    if (adts_aac_) {
++      size_t header_size = 0;
++      base::HeapArray<uint8_t> adts_frame =
++          adts_aac_->CreateAdtsFromEsds(AVPacketData(*packet), &header_size);
++      ASSERT_EQ(7u, header_size);
++      buffer = DecoderBuffer::CopyFrom(adts_frame.as_span());
++    }
++#endif
+     buffer->set_timestamp(ConvertFromTimeBase(
+         reader_->GetAVStreamForTesting()->time_base, packet->pts));
+     buffer->set_duration(ConvertFromTimeBase(
+@@ -411,6 +424,27 @@ class AudioDecoderTest
+     }
+   }
+ 
++#if BUILDFLAG(IS_MAC) && BUILDFLAG(USE_PROPRIETARY_CODECS)
++  bool IsAudioToolboxAacLc() const {
++    return decoder_type_ == AudioDecoderType::kAudioToolbox &&
++           params_.codec == AudioCodec::kAAC &&
++           params_.profile != AudioCodecProfile::kXHE_AAC;
++  }
++
++  // From here on Decode() gives the decoder every frame with an ADTS header,
++  // which is how Chromium's MP4 parser hands Media Source AAC frames over
++  // (mp4::AAC::CreateAdtsFromEsds).
++  void FrameDecodeInputAsAdts() {
++    AudioDecoderConfig config;
++    ASSERT_TRUE(AVCodecContextToAudioDecoderConfig(
++        reader_->codec_context_for_testing(), EncryptionScheme::kUnencrypted,
++        &config));
++    adts_aac_.emplace();
++    ASSERT_TRUE(adts_aac_->Parse(config.extra_data(), &media_log_));
++    ASSERT_TRUE(adts_aac_->fits_in_adts());
++  }
++#endif
++
+   size_t decoded_audio_size() const { return decoded_audio_.size(); }
+   base::TimeDelta start_timestamp() const { return start_timestamp_; }
+   const DecoderStatus& last_decode_status() const {
+@@ -437,6 +471,9 @@ class AudioDecoderTest
+   const char* filename_ = nullptr;
+   std::unique_ptr<InMemoryUrlProtocol> protocol_;
+   std::unique_ptr<AudioFileReader> reader_;
++#if BUILDFLAG(IS_MAC) && BUILDFLAG(USE_PROPRIETARY_CODECS)
++  std::optional<mp4::AAC> adts_aac_;
++#endif
+ 
+   std::unique_ptr<AudioDecoder> decoder_;
+   bool pending_decode_;
+@@ -488,6 +525,22 @@ constexpr TestParams kMediaCodecTestParams[] = {
  };
  #endif  // BUILDFLAG(IS_ANDROID)
  
@@ -269,7 +340,7 @@ diff --git media/filters/audio_decoder_unittest.cc media/filters/audio_decoder_u
  #if (BUILDFLAG(IS_MAC) || BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_WIN)) && \
      BUILDFLAG(USE_PROPRIETARY_CODECS)
  // Note: We don't test hashes for xHE-AAC content since the decoder is provided
-@@ -641,8 +659,8 @@ constexpr TestParams kSymphoniaTestParams[] = {
+@@ -641,8 +694,8 @@ constexpr TestParams kSymphoniaTestParams[] = {
  void AudioDecoderTest::SetReinitializeParams() {
  #if (BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)) && \
      BUILDFLAG(USE_PROPRIETARY_CODECS)
@@ -280,10 +351,47 @@ diff --git media/filters/audio_decoder_unittest.cc media/filters/audio_decoder_u
    if (decoder_type_ == AudioDecoderType::kAudioToolbox ||
        decoder_type_ == AudioDecoderType::kMediaFoundation) {
      set_params(params_.channel_layout == kXheAacTestParams[0].channel_layout
-@@ -805,19 +823,31 @@ INSTANTIATE_TEST_SUITE_P(MediaCodec,
- INSTANTIATE_TEST_SUITE_P(MediaCodec,
-                          AudioDecoderTest,
-                          Combine(Values(AudioDecoderType::kMediaCodec),
+@@ -733,6 +786,39 @@ TEST_P(AudioDecoderTest, ProduceAudioSamples) {
+   }
+ }
+ 
++#if BUILDFLAG(IS_MAC) && BUILDFLAG(USE_PROPRIETARY_CODECS)
++// AudioToolbox drops the ADTS header that Media Source AAC frames carry and
++// decodes the same audio as from the raw frames.
++TEST_P(AudioDecoderTest, Dawn_AdtsFramedAac) {
++  if (!IsAudioToolboxAacLc()) {
++    GTEST_SKIP() << "AudioToolbox AAC-LC only.";
++  }
++  ASSERT_NO_FATAL_FAILURE(Initialize());
++
++  std::vector<std::string> raw_frame_hashes;
++  do {
++    ASSERT_NO_FATAL_FAILURE(Decode());
++    ASSERT_TRUE(last_decode_status().is_ok());
++  } while (decoded_audio_size() < kDecodeRuns);
++  for (size_t j = 0; j < kDecodeRuns; ++j) {
++    raw_frame_hashes.push_back(GetDecodedAudioSHA256(j));
++  }
++  SendEndOfStream();
++  ResetReader();
++
++  ASSERT_NO_FATAL_FAILURE(FrameDecodeInputAsAdts());
++  do {
++    ASSERT_NO_FATAL_FAILURE(Decode());
++    ASSERT_TRUE(last_decode_status().is_ok());
++  } while (decoded_audio_size() < kDecodeRuns);
++  for (size_t j = 0; j < kDecodeRuns; ++j) {
++    SCOPED_TRACE(base::StringPrintf("j = %" PRIuS, j));
++    ExpectDecodedAudio(j, raw_frame_hashes[j]);
++  }
++  SendEndOfStream();
++}
++#endif
++
+ TEST_P(AudioDecoderTest, Decode) {
+   ASSERT_NO_FATAL_FAILURE(Initialize());
+   Decode();
+@@ -808,17 +894,29 @@ INSTANTIATE_TEST_SUITE_P(MediaCodec,
                                   ValuesIn(GetAndroidParams())));
  #endif
  

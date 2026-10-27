@@ -21,9 +21,9 @@ set -euo pipefail
 
 BUILD_ROOT="${1:-$HOME/DawnCEFBuild}"
 CEF_URL="${DAWN_CEF_URL:-https://github.com/Weheba/DawnCEFSource.git}"
-CEF_CHECKOUT="${DAWN_CEF_CHECKOUT:-dawn-native-codecs.4}"
+CEF_CHECKOUT="${DAWN_CEF_CHECKOUT:-dawn-native-codecs.5}"
 CHROMIUM_CHECKOUT="refs/tags/146.0.7680.179"
-DISTRIBUTION_SUFFIX="dawn-native-codecs.4"
+DISTRIBUTION_SUFFIX="dawn-native-codecs.5"
 REQUIRED_KB=$((155 * 1024 * 1024))
 BUILD_TARGETS="cefclient"
 MAC_ARCH="${DAWN_MAC_ARCH:-arm64}"
@@ -85,7 +85,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AUTOMATE="$SCRIPT_DIR/../tools/automate/automate-git.py"
 DEPOT_TOOLS="$BUILD_ROOT/depot_tools"
 
-# The codec configuration matches the Windows build. The remaining args only
+# The codec configuration matches the Windows build. media_use_openh264=false
+# leaves out the OpenH264 software H.264 encoder that proprietary_codecs turns
+# on by default; WebRTC's rtc_use_h264 follows it. The remaining args only
 # reduce build memory and time and do not change the generated code:
 #   symbol_level=0 / enable_dsyms=false: no debug info or dSYMs (the
 #     distribution ships without symbols either way).
@@ -93,7 +95,7 @@ DEPOT_TOOLS="$BUILD_ROOT/depot_tools"
 #     several GB.
 #   treat_warnings_as_errors=false: Xcode SDKs newer than this Chromium branch
 #     add deprecation warnings.
-GN_DEFINES='is_official_build=true proprietary_codecs=true media_use_ffmpeg=true ffmpeg_branding="Chromium" use_thin_lto=false chrome_pgo_phase=0'
+GN_DEFINES='is_official_build=true proprietary_codecs=true media_use_ffmpeg=true ffmpeg_branding="Chromium" media_use_openh264=false use_thin_lto=false chrome_pgo_phase=0'
 GN_DEFINES+=' symbol_level=0 enable_dsyms=false concurrent_links=1 treat_warnings_as_errors=false'
 if [[ -n "${DAWN_MAC_SDK_PATH:-}" ]]; then
   if [[ ! -f "$DAWN_MAC_SDK_PATH/SDKSettings.json" ]]; then
@@ -166,6 +168,81 @@ find "$CHROMIUM_SRC/cef/binary_distrib" -maxdepth 1 \
     --no-archive
 )
 
+DISTRIB_DIRS=()
+while IFS= read -r dir; do
+  DISTRIB_DIRS+=("$dir")
+done < <(find "$CHROMIUM_SRC/cef/binary_distrib" -mindepth 1 -maxdepth 1 -type d \
+  -name "cef_binary_*_${DISTRIB_PLATFORM}_${DISTRIBUTION_SUFFIX}_minimal")
+if (( ${#DISTRIB_DIRS[@]} != 1 )); then
+  echo "Expected one $DISTRIB_PLATFORM distribution, found ${#DISTRIB_DIRS[@]}." >&2
+  exit 1
+fi
+DISTRIB_DIR="${DISTRIB_DIRS[0]}"
+
+# --allow-partial lets make_distrib.py write a distribution without the Release
+# files when the build output is missing, so check that everything is there.
+case "$MAC_ARCH" in
+  arm64) MACHO_ARCH="arm64" ;;
+  x64) MACHO_ARCH="x86_64" ;;
+esac
+FRAMEWORK_DIR="$DISTRIB_DIR/Release/Chromium Embedded Framework.framework"
+FRAMEWORK_BINARY="$FRAMEWORK_DIR/Chromium Embedded Framework"
+EXPECTED_REVISION="$(awk -F= '$1 == "codec.revision" { print $2 }' \
+  "$SCRIPT_DIR/dawn-codec-build.properties")"
+for path in \
+  "$DISTRIB_DIR/CMakeLists.txt" \
+  "$DISTRIB_DIR/cmake/FindCEF.cmake" \
+  "$DISTRIB_DIR/include/cef_version.h" \
+  "$DISTRIB_DIR/libcef_dll/CMakeLists.txt" \
+  "$DISTRIB_DIR/dawn-codec-build.properties" \
+  "$FRAMEWORK_BINARY" \
+  "$FRAMEWORK_DIR/Libraries/libEGL.dylib" \
+  "$FRAMEWORK_DIR/Libraries/libGLESv2.dylib" \
+  "$FRAMEWORK_DIR/Libraries/libcef_sandbox.dylib" \
+  "$FRAMEWORK_DIR/Libraries/libvk_swiftshader.dylib" \
+  "$FRAMEWORK_DIR/Libraries/vk_swiftshader_icd.json" \
+  "$FRAMEWORK_DIR/Resources/Info.plist" \
+  "$FRAMEWORK_DIR/Resources/chrome_100_percent.pak" \
+  "$FRAMEWORK_DIR/Resources/chrome_200_percent.pak" \
+  "$FRAMEWORK_DIR/Resources/resources.pak" \
+  "$FRAMEWORK_DIR/Resources/icudtl.dat" \
+  "$FRAMEWORK_DIR/Resources/v8_context_snapshot.$MACHO_ARCH.bin" \
+  "$FRAMEWORK_DIR/Resources/en.lproj/locale.pak"; do
+  if [[ ! -s "$path" ]]; then
+    echo "The distribution is incomplete: ${path#"$DISTRIB_DIR/"} is missing or empty." >&2
+    exit 1
+  fi
+done
+if [[ "$(lipo -archs "$FRAMEWORK_BINARY")" != "$MACHO_ARCH" ]]; then
+  echo "The framework is not a single $MACHO_ARCH slice: $(lipo -archs "$FRAMEWORK_BINARY")" >&2
+  exit 1
+fi
+if ! grep -Fqx "codec.revision=$EXPECTED_REVISION" "$DISTRIB_DIR/dawn-codec-build.properties"; then
+  echo "The distribution marker does not name $EXPECTED_REVISION." >&2
+  exit 1
+fi
+
+# No OpenH264: both GN args must resolve to false, and no OpenH264 or WebRTC
+# software H.264 encoder code may be linked into the framework.
+for arg in media_use_openh264 rtc_use_h264; do
+  value="$(cd "$CHROMIUM_SRC" && "$CHROMIUM_SRC/buildtools/mac/gn" args \
+    "out/$OUT_CONFIG" --list="$arg" --short || true)"
+  if [[ "$value" != "$arg = false" ]]; then
+    echo "$arg must be false: ${value:-not declared}" >&2
+    exit 1
+  fi
+done
+OPENH264_MATCHES="$(find "$FRAMEWORK_DIR" -type f \
+  \( -name "Chromium Embedded Framework" -o -name "*.dylib" \) -print0 |
+  xargs -0 env LC_ALL=C grep -a -o -E 'OpenH264|H264EncoderImpl|OpenH264VideoEncoder' |
+  sort | uniq -c || true)"
+if [[ -n "$OPENH264_MATCHES" ]]; then
+  echo "OpenH264 is linked into the framework:" >&2
+  echo "$OPENH264_MATCHES" >&2
+  exit 1
+fi
+echo "Distribution complete, OpenH264 absent: $DISTRIB_DIR"
+
 if [[ "${DAWN_RUN_MEDIA_TESTS:-0}" == "1" ]]; then
   MEDIA_TESTS="$CHROMIUM_SRC/out/$OUT_CONFIG/media_unittests"
   if [[ ! -x "$MEDIA_TESTS" ]]; then
@@ -179,6 +256,8 @@ if [[ "${DAWN_RUN_MEDIA_TESTS:-0}" == "1" ]]; then
   # check fails for every case that loads it: all of /2, and the Reinitialize
   # cases of /1 and /3, which switch to it. Those are excluded; everything else
   # decodes and checks timestamps (and hashes for AAC-LC).
+  # Dawn_AdtsFramedAac decodes sfx.m4a again with an ADTS header on every frame,
+  # as Media Source delivers it, and expects the same audio.
   # The FFmpegDemuxer cases check that an MP4 AAC track survives demuxing without FFmpeg's AAC decoder.
   AUDIO_TOOLBOX_FILTER='AudioToolbox/*:FFmpegDemuxerTest.Dawn_*:FFmpegDemuxerTest.Read_Mp4_Media_Track_Info-AudioToolbox/AudioDecoderTest.*/2:AudioToolbox/AudioDecoderTest.Reinitialize_*/1:AudioToolbox/AudioDecoderTest.Reinitialize_*/3'
   "$MEDIA_TESTS" \
