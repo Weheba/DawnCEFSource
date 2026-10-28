@@ -16,10 +16,18 @@ index 5edbb1e..7325f81 100644
  # exported since things like USE_NEON have different meanings elsewhere in the
  # code base.
 diff --git media/filters/mac/audio_toolbox_audio_decoder.cc media/filters/mac/audio_toolbox_audio_decoder.cc
-index 275ac1d..5a8eaee 100644
+index 275ac1d8df..d13381aad3 100644
 --- media/filters/mac/audio_toolbox_audio_decoder.cc
 +++ media/filters/mac/audio_toolbox_audio_decoder.cc
-@@ -40,9 +40,9 @@ bool CanUseAudioToolbox(const AudioDecoderConfig& config) {
+@@ -6,6 +6,7 @@
+ 
+ #include <algorithm>
+ #include <optional>
++#include <vector>
+ 
+ #include "base/apple/osstatus_logging.h"
+ #include "base/auto_reset.h"
+@@ -40,16 +41,86 @@ bool CanUseAudioToolbox(const AudioDecoderConfig& config) {
      return true;
    }
  #endif
@@ -32,7 +40,100 @@ index 275ac1d..5a8eaee 100644
  }
  
  struct InputData {
-@@ -115,8 +115,8 @@ void AudioToolboxAudioDecoder::Initialize(const AudioDecoderConfig& config,
+   raw_ptr<DecoderBuffer> buffer = nullptr;
++  // Bytes at the start of |buffer| that are not part of the AAC access unit.
++  size_t offset = 0;
+   AudioStreamPacketDescription packet = {};
+ };
+ 
++// Chromium's MP4 parser (Media Source) prepends an ADTS header to every AAC
++// frame whose config fits ADTS. The converter is set up for raw access units
++// with the esds magic cookie, so such a header must not reach it. FFmpegDemuxer
++// (plain src) hands over raw frames because NeedsBitstreamConversion() is false.
++// Returns the size of a single-frame ADTS header that spans exactly |data|, or 0.
++size_t AdtsHeaderSize(base::span<const uint8_t> data) {
++  if (data.size() < 7 || data[0] != 0xFF || (data[1] & 0xF6) != 0xF0) {
++    return 0;
++  }
++  const size_t header_size = (data[1] & 0x01) ? 7 : 9;
++  const size_t frame_length = ((data[3] & 0x03) << 11) | (data[4] << 3) |
++                              ((data[5] >> 5) & 0x07);
++  const bool single_raw_block = (data[6] & 0x03) == 0;
++  if (!single_raw_block || frame_length != data.size() ||
++      data.size() <= header_size) {
++    return 0;
++  }
++  return header_size;
++}
++
++// An HE-AAC or HE-AAC v2 magic cookie describes several layers, and
++// kAudioFormatProperty_FormatInfo returns only the AAC-LC core: half the output
++// sample rate and half the frames per packet, without SBR or PS. Replaces
++// |format| with the richest layer the system can decode, as AudioQueue and
++// AVFoundation do. Leaves |format| alone for a single-layer stream.
++void SelectRichestDecodableLayer(base::span<const uint8_t> magic_cookie,
++                                 AudioStreamBasicDescription* format) {
++  AudioFormatInfo info = {};
++  info.mASBD = *format;
++  info.mMagicCookie = magic_cookie.data();
++  info.mMagicCookieSize = magic_cookie.size();
++  UInt32 size = 0;
++  if (AudioFormatGetPropertyInfo(kAudioFormatProperty_FormatList, sizeof(info),
++                                 &info, &size) != noErr ||
++      size < sizeof(AudioFormatListItem)) {
++    return;
++  }
++  std::vector<AudioFormatListItem> layers(size / sizeof(AudioFormatListItem));
++  size = layers.size() * sizeof(AudioFormatListItem);
++  if (AudioFormatGetProperty(kAudioFormatProperty_FormatList, sizeof(info),
++                             &info, &size, layers.data()) != noErr) {
++    return;
++  }
++  layers.resize(size / sizeof(AudioFormatListItem));
++
++  UInt32 ids_size = 0;
++  if (AudioFormatGetPropertyInfo(kAudioFormatProperty_DecodeFormatIDs, 0,
++                                 nullptr, &ids_size) != noErr) {
++    return;
++  }
++  std::vector<UInt32> decodable(ids_size / sizeof(UInt32));
++  ids_size = decodable.size() * sizeof(UInt32);
++  if (AudioFormatGetProperty(kAudioFormatProperty_DecodeFormatIDs, 0, nullptr,
++                             &ids_size, decodable.data()) != noErr) {
++    return;
++  }
++  decodable.resize(ids_size / sizeof(UInt32));
++
++  // The list runs from the richest layer down to the AAC-LC core.
++  for (const AudioFormatListItem& layer : layers) {
++    if (std::ranges::find(decodable, layer.mASBD.mFormatID) !=
++        decodable.end()) {
++      *format = layer.mASBD;
++      return;
++    }
++  }
++}
++
+ // Special error code we use to differentiate real errors from end of buffer.
+ constexpr OSStatus kNoMoreDataError = -12345;
+ 
+@@ -67,11 +138,12 @@ OSStatus ProvideInputCallback(AudioConverterRef decoder,
+ 
+   *num_packets = buffer_list->mNumberBuffers = 1;
+   buffer_list->mBuffers[0].mNumberChannels = 0;
+-  buffer_list->mBuffers[0].mDataByteSize = input_data->buffer->size();
++  buffer_list->mBuffers[0].mDataByteSize =
++      input_data->buffer->size() - input_data->offset;
+ 
+   // No const version of this API unfortunately, so we need const_cast().
+-  buffer_list->mBuffers[0].mData =
+-      const_cast<uint8_t*>(base::span(*input_data->buffer).data());
++  buffer_list->mBuffers[0].mData = const_cast<uint8_t*>(
++      base::span(*input_data->buffer).subspan(input_data->offset).data());
+ 
+   if (packets)
+     *packets = &input_data->packet;
+@@ -115,8 +187,8 @@ void AudioToolboxAudioDecoder::Initialize(const AudioDecoderConfig& config,
                                            const OutputCB& output_cb,
                                            const WaitingCB& waiting_cb) {
    if (!CanUseAudioToolbox(config)) {
@@ -43,7 +144,20 @@ index 275ac1d..5a8eaee 100644
      std::move(init_cb).Run(DecoderStatus::Codes::kUnsupportedCodec);
      return;
    }
-@@ -248,9 +248,13 @@ bool AudioToolboxAudioDecoder::CreateDecoder(const AudioDecoderConfig& config) {
+@@ -159,8 +231,10 @@ void AudioToolboxAudioDecoder::Decode(scoped_refptr<DecoderBuffer> buffer,
+ 
+   InputData input_data;
+   input_data.buffer = buffer.get();
+-  if (!buffer->end_of_stream())
+-    input_data.packet.mDataByteSize = buffer->size();
++  if (!buffer->end_of_stream()) {
++    input_data.offset = AdtsHeaderSize(base::span(*buffer));
++    input_data.packet.mDataByteSize = buffer->size() - input_data.offset;
++  }
+ 
+   // Must be filled in each time in case AudioConverterFillComplexBuffer()
+   // modified it during a previous call.
+@@ -248,9 +322,13 @@ bool AudioToolboxAudioDecoder::CreateDecoder(const AudioDecoderConfig& config) {
  
    switch (config.codec()) {
      case AudioCodec::kAAC: {
@@ -60,7 +174,19 @@ index 275ac1d..5a8eaee 100644
        magic_cookie = mp4::ESDescriptor::CreateEsds(config.extra_data());
  
        // Have macOS fill in the rest of the input_format for us.
-@@ -382,30 +386,31 @@ bool AudioToolboxAudioDecoder::CreateDecoder(const AudioDecoderConfig& config) {
+@@ -263,6 +341,11 @@ bool AudioToolboxAudioDecoder::CreateDecoder(const AudioDecoderConfig& config) {
+             << "AudioFormatGetProperty() failed";
+         return false;
+       }
++      // Without this, HE-AAC decodes as its AAC-LC core and, labelled with
++      // the stream's sample rate, plays at twice its speed and pitch.
++      if (config.profile() != AudioCodecProfile::kXHE_AAC) {
++        SelectRichestDecodableLayer(magic_cookie, &input_format);
++      }
+       break;
+     }
+ #if BUILDFLAG(ENABLE_PLATFORM_AC3_EAC3_AUDIO)
+@@ -382,30 +465,31 @@ bool AudioToolboxAudioDecoder::CreateDecoder(const AudioDecoderConfig& config) {
        return false;
      }
  
@@ -115,6 +241,19 @@ index 275ac1d..5a8eaee 100644
      }
    }
  
+@@ -417,8 +501,11 @@ bool AudioToolboxAudioDecoder::CreateDecoder(const AudioDecoderConfig& config) {
+   output_bus_ = AudioBus::Create(input_format.mChannelsPerFrame,
+                                  input_format.mFramesPerPacket);
+ 
++  // Label the output with the rate the converter produces. When it differs
++  // from the config (HE-AAC whose SBR is only implicit), the config's rate
++  // would change the playback speed; the renderer resamples a different rate.
+   limiter_queue_ = std::make_unique<LimitingAudioQueue>(
+-      channel_layout_, config.samples_per_second(),
++      channel_layout_, static_cast<int>(sample_rate_),
+       input_format.mChannelsPerFrame, input_format.mFramesPerPacket);
+ 
+   // AudioBufferList is a strange variable length structure that by default only
 diff --git media/filters/win/media_foundation_audio_decoder.cc media/filters/win/media_foundation_audio_decoder.cc
 index 5b0c6f1..90b0626 100644
 --- media/filters/win/media_foundation_audio_decoder.cc
@@ -171,9 +310,27 @@ index 8a4f1b8..eb39c17 100644
      return audio_configs;
 
 diff --git media/filters/audio_decoder_unittest.cc media/filters/audio_decoder_unittest.cc
+index b7c9e77c2e..dd273b1a7f 100644
 --- media/filters/audio_decoder_unittest.cc
 +++ media/filters/audio_decoder_unittest.cc
-@@ -242,6 +242,7 @@ void AudioDecoderTest::Initialize() {
+@@ -6,6 +6,7 @@
+ #include <stdint.h>
+ 
+ #include <memory>
++#include <optional>
+ #include <string_view>
+ #include <vector>
+ 
+@@ -57,6 +58,7 @@
+ #endif
+ 
+ #if BUILDFLAG(USE_PROPRIETARY_CODECS)
++#include "media/formats/mp4/aac.h"
+ #include "media/formats/mpeg/adts_stream_parser.h"
+ #endif
+ 
+@@ -243,11 +245,13 @@ class AudioDecoderTest
+         reader_->codec_context_for_testing(), EncryptionScheme::kUnencrypted,
          &config));
  
 -#if (BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_WIN)) && \
@@ -182,13 +339,66 @@ diff --git media/filters/audio_decoder_unittest.cc media/filters/audio_decoder_u
      BUILDFLAG(USE_PROPRIETARY_CODECS)
      // MediaCodec type requires config->extra_data() for AAC codec. For ADTS
      // streams we need to extract it with a separate procedure.
-@@ -250,4 +251,5 @@ void AudioDecoderTest::Initialize() {
      if ((decoder_type_ == AudioDecoderType::kMediaCodec ||
 +         decoder_type_ == AudioDecoderType::kAudioToolbox ||
           decoder_type_ == AudioDecoderType::kMediaFoundation) &&
          params_.codec == AudioCodec::kAAC && config.extra_data().empty()) {
        size_t sample_rate;
-@@ -490,6 +492,22 @@ constexpr TestParams kMediaCodecTestParams[] = {
+@@ -297,6 +301,15 @@ class AudioDecoderTest
+ 
+     scoped_refptr<DecoderBuffer> buffer =
+         DecoderBuffer::CopyFrom(AVPacketData(*packet));
++#if BUILDFLAG(IS_MAC) && BUILDFLAG(USE_PROPRIETARY_CODECS)
++    if (adts_aac_) {
++      size_t header_size = 0;
++      base::HeapArray<uint8_t> adts_frame =
++          adts_aac_->CreateAdtsFromEsds(AVPacketData(*packet), &header_size);
++      ASSERT_EQ(7u, header_size);
++      buffer = DecoderBuffer::CopyFrom(adts_frame.as_span());
++    }
++#endif
+     buffer->set_timestamp(ConvertFromTimeBase(
+         reader_->GetAVStreamForTesting()->time_base, packet->pts));
+     buffer->set_duration(ConvertFromTimeBase(
+@@ -411,6 +424,27 @@ class AudioDecoderTest
+     }
+   }
+ 
++#if BUILDFLAG(IS_MAC) && BUILDFLAG(USE_PROPRIETARY_CODECS)
++  bool IsAudioToolboxAacLc() const {
++    return decoder_type_ == AudioDecoderType::kAudioToolbox &&
++           params_.codec == AudioCodec::kAAC &&
++           params_.profile != AudioCodecProfile::kXHE_AAC;
++  }
++
++  // From here on Decode() gives the decoder every frame with an ADTS header,
++  // which is how Chromium's MP4 parser hands Media Source AAC frames over
++  // (mp4::AAC::CreateAdtsFromEsds).
++  void FrameDecodeInputAsAdts() {
++    AudioDecoderConfig config;
++    ASSERT_TRUE(AVCodecContextToAudioDecoderConfig(
++        reader_->codec_context_for_testing(), EncryptionScheme::kUnencrypted,
++        &config));
++    adts_aac_.emplace();
++    ASSERT_TRUE(adts_aac_->Parse(config.extra_data(), &media_log_));
++    ASSERT_TRUE(adts_aac_->fits_in_adts());
++  }
++#endif
++
+   size_t decoded_audio_size() const { return decoded_audio_.size(); }
+   base::TimeDelta start_timestamp() const { return start_timestamp_; }
+   const DecoderStatus& last_decode_status() const {
+@@ -437,6 +471,9 @@ class AudioDecoderTest
+   const char* filename_ = nullptr;
+   std::unique_ptr<InMemoryUrlProtocol> protocol_;
+   std::unique_ptr<AudioFileReader> reader_;
++#if BUILDFLAG(IS_MAC) && BUILDFLAG(USE_PROPRIETARY_CODECS)
++  std::optional<mp4::AAC> adts_aac_;
++#endif
+ 
+   std::unique_ptr<AudioDecoder> decoder_;
+   bool pending_decode_;
+@@ -488,6 +525,22 @@ constexpr TestParams kMediaCodecTestParams[] = {
  };
  #endif  // BUILDFLAG(IS_ANDROID)
  
@@ -211,7 +421,7 @@ diff --git media/filters/audio_decoder_unittest.cc media/filters/audio_decoder_u
  #if (BUILDFLAG(IS_MAC) || BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_WIN)) && \
      BUILDFLAG(USE_PROPRIETARY_CODECS)
  // Note: We don't test hashes for xHE-AAC content since the decoder is provided
-@@ -641,8 +659,8 @@ constexpr TestParams kSymphoniaTestParams[] = {
+@@ -641,8 +694,8 @@ constexpr TestParams kSymphoniaTestParams[] = {
  void AudioDecoderTest::SetReinitializeParams() {
  #if (BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)) && \
      BUILDFLAG(USE_PROPRIETARY_CODECS)
@@ -222,10 +432,215 @@ diff --git media/filters/audio_decoder_unittest.cc media/filters/audio_decoder_u
    if (decoder_type_ == AudioDecoderType::kAudioToolbox ||
        decoder_type_ == AudioDecoderType::kMediaFoundation) {
      set_params(params_.channel_layout == kXheAacTestParams[0].channel_layout
-@@ -805,19 +823,31 @@ INSTANTIATE_TEST_SUITE_P(MediaCodec,
- INSTANTIATE_TEST_SUITE_P(MediaCodec,
-                          AudioDecoderTest,
-                          Combine(Values(AudioDecoderType::kMediaCodec),
+@@ -733,6 +786,207 @@ TEST_P(AudioDecoderTest, ProduceAudioSamples) {
+   }
+ }
+ 
++#if BUILDFLAG(IS_MAC) && BUILDFLAG(USE_PROPRIETARY_CODECS)
++// AudioToolbox drops the ADTS header that Media Source AAC frames carry and
++// decodes the same audio as from the raw frames.
++TEST_P(AudioDecoderTest, Dawn_AdtsFramedAac) {
++  if (!IsAudioToolboxAacLc()) {
++    GTEST_SKIP() << "AudioToolbox AAC-LC only.";
++  }
++  ASSERT_NO_FATAL_FAILURE(Initialize());
++
++  std::vector<std::string> raw_frame_hashes;
++  do {
++    ASSERT_NO_FATAL_FAILURE(Decode());
++    ASSERT_TRUE(last_decode_status().is_ok());
++  } while (decoded_audio_size() < kDecodeRuns);
++  for (size_t j = 0; j < kDecodeRuns; ++j) {
++    raw_frame_hashes.push_back(GetDecodedAudioSHA256(j));
++  }
++  SendEndOfStream();
++  ResetReader();
++
++  ASSERT_NO_FATAL_FAILURE(FrameDecodeInputAsAdts());
++  do {
++    ASSERT_NO_FATAL_FAILURE(Decode());
++    ASSERT_TRUE(last_decode_status().is_ok());
++  } while (decoded_audio_size() < kDecodeRuns);
++  for (size_t j = 0; j < kDecodeRuns; ++j) {
++    SCOPED_TRACE(base::StringPrintf("j = %" PRIuS, j));
++    ExpectDecodedAudio(j, raw_frame_hashes[j]);
++  }
++  SendEndOfStream();
++}
++#endif
++
++#if (BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)) && \
++    BUILDFLAG(USE_PROPRIETARY_CODECS)
++// HE-AAC with backward-compatible SBR signalling: the AudioSpecificConfig is
++// AAC-LC at 24 kHz plus an SBR extension at 48 kHz, stereo. These are the first
++// 8 access units of a -110 dBFS 600 Hz tone encoded with afconvert -d aach.
++constexpr uint8_t kDawnHeAacAsc[] = {0x13, 0x10, 0x56, 0xe5, 0x98};
++constexpr uint8_t kDawnHeAacFrame0[] = {
++    0x21, 0x00, 0x03, 0x40, 0x68, 0x1b, 0xc1, 0x37, 0xec, 0x04, 0xf0, 0x21,
++    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1a, 0x34,
++    0x00, 0x38,
++};
++constexpr uint8_t kDawnHeAacFrame1[] = {
++    0x21, 0x0b, 0x4f, 0xff, 0x00, 0x00, 0x00, 0x00, 0x1e, 0xc1, 0x62, 0x20,
++    0xf8, 0x45, 0xb8, 0x9b, 0x52, 0xd3, 0xfc, 0x43, 0xcc, 0xf1, 0x54, 0x82,
++    0xff, 0xe3, 0x00, 0x00, 0x00, 0x00, 0x16, 0xe2, 0x6d, 0x4b, 0x4f, 0xf1,
++    0x0f, 0x6e, 0xd0, 0x10, 0xa8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++    0x00, 0x00, 0x00, 0x00, 0xe0,
++};
++constexpr uint8_t kDawnHeAacFrame2[] = {
++    0x21, 0x0b, 0x4f, 0xff, 0x00, 0x00, 0x00, 0x00, 0x1e, 0x41, 0x66, 0x10,
++    0xf8, 0x81, 0xe0, 0x54, 0x82, 0xff, 0xe3, 0x00, 0x00, 0x00, 0x00, 0x06,
++    0xed, 0x01, 0x0a, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++    0x00, 0x00, 0x0e,
++};
++constexpr uint8_t kDawnHeAacFrame3[] = {
++    0x21, 0x0b, 0x4f, 0xff, 0x00, 0x00, 0x00, 0x00, 0x1e, 0x01, 0x6a, 0x10,
++    0xf8, 0x80, 0x74, 0x54, 0x82, 0xff, 0xe3, 0x00, 0x00, 0x00, 0x00, 0x06,
++    0xf0, 0x1d, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++    0x00, 0x00, 0xf1, 0xe0, 0x0e,
++};
++constexpr uint8_t kDawnHeAacFrame4[] = {
++    0x21, 0x0b, 0x43, 0xd8, 0x2c, 0x42, 0x1f, 0x10, 0x32, 0xb4, 0x7f, 0xdc,
++    0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xbc, 0x07, 0x40, 0x42, 0x00, 0x00,
++    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x44, 0x88, 0x03, 0x80,
++};
++constexpr uint8_t kDawnHeAacFrame5[] = {
++    0x21, 0x0b, 0x43, 0xc8, 0x2c, 0xc2, 0x1f, 0x10, 0x3c, 0x26, 0x8f, 0xfb,
++    0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x37, 0x81, 0x68, 0x08, 0x40, 0x00,
++    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0b, 0xde, 0xbd, 0xe0,
++    0x70,
++};
++constexpr uint8_t kDawnHeAacFrame6[] = {
++    0x21, 0x0b, 0x43, 0xd0, 0x2c, 0xc2, 0x1f, 0x10, 0x3b, 0xed, 0x1f, 0xf7,
++    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x6e, 0xd0, 0x10, 0xa8, 0x00, 0x00,
++    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe0,
++};
++constexpr uint8_t kDawnHeAacFrame7[] = {
++    0x21, 0x0b, 0x43, 0xc8, 0x2c, 0xc2, 0x1f, 0x10, 0x3c, 0x06, 0x8f, 0xfb,
++    0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x37, 0x68, 0x08, 0x54, 0x00, 0x00,
++    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x70,
++};
++
++namespace {
++
++// Decodes the access units above, configured the way FFmpegDemuxer configures
++// HE-AAC (48 kHz), and returns the output. |drain| ends with an EOS buffer.
++std::vector<scoped_refptr<AudioBuffer>> DecodeDawnHeAac(AudioDecoder* decoder,
++                                                        bool drain) {
++  const AudioDecoderConfig config(
++      AudioCodec::kAAC, kSampleFormatF32, CHANNEL_LAYOUT_STEREO, 48000,
++      std::vector<uint8_t>(std::begin(kDawnHeAacAsc), std::end(kDawnHeAacAsc)),
++      EncryptionScheme::kUnencrypted);
++
++  bool initialized = false;
++  std::vector<scoped_refptr<AudioBuffer>> outputs;
++  decoder->Initialize(
++      config, nullptr,
++      base::BindOnce([](bool* ok, DecoderStatus status) { *ok = status.is_ok(); },
++                     base::Unretained(&initialized)),
++      base::BindRepeating(
++          [](std::vector<scoped_refptr<AudioBuffer>>* out,
++             scoped_refptr<AudioBuffer> buffer) {
++            out->push_back(std::move(buffer));
++          },
++          base::Unretained(&outputs)),
++      base::DoNothing());
++  base::RunLoop().RunUntilIdle();
++  EXPECT_TRUE(initialized);
++  if (!initialized) {
++    return outputs;
++  }
++
++  const base::span<const uint8_t> frames[] = {
++      kDawnHeAacFrame0,
++      kDawnHeAacFrame1,
++      kDawnHeAacFrame2,
++      kDawnHeAacFrame3,
++      kDawnHeAacFrame4,
++      kDawnHeAacFrame5,
++      kDawnHeAacFrame6,
++      kDawnHeAacFrame7};
++  const base::TimeDelta frame_duration = base::Microseconds(42667);
++  std::vector<scoped_refptr<DecoderBuffer>> buffers;
++  for (size_t i = 0; i < std::size(frames); ++i) {
++    scoped_refptr<DecoderBuffer> buffer = DecoderBuffer::CopyFrom(frames[i]);
++    buffer->set_timestamp(frame_duration * static_cast<int>(i));
++    buffer->set_duration(frame_duration);
++    buffer->set_is_key_frame(true);
++    buffers.push_back(std::move(buffer));
++  }
++  if (drain) {
++    buffers.push_back(DecoderBuffer::CreateEOSBuffer());
++  }
++  for (size_t i = 0; i < buffers.size(); ++i) {
++    bool decoded = false;
++    decoder->Decode(
++        std::move(buffers[i]),
++        base::BindOnce([](bool* ok, DecoderStatus status) { *ok = status.is_ok(); },
++                       base::Unretained(&decoded)));
++    base::RunLoop().RunUntilIdle();
++    EXPECT_TRUE(decoded) << "buffer " << i;
++  }
++  return outputs;
++}
++
++}  // namespace
++#endif
++
++#if BUILDFLAG(IS_MAC) && BUILDFLAG(USE_PROPRIETARY_CODECS)
++// AudioToolbox must decode the SBR layer: 2048 frames at 48 kHz per access
++// unit. The AAC-LC core alone gives 1024 frames per access unit, which played
++// at the stream's 48 kHz runs at twice the speed and pitch.
++TEST(AudioToolboxHeAacTest, Dawn_DecodesSbrLayer) {
++  base::test::SingleThreadTaskEnvironment task_environment;
++  AudioToolboxAudioDecoder decoder(std::make_unique<NullMediaLog>());
++  const std::vector<scoped_refptr<AudioBuffer>> outputs =
++      DecodeDawnHeAac(&decoder, /*drain=*/false);
++
++  // The converter trims its decoder delay from the first output.
++  ASSERT_GE(outputs.size(), 7u);
++  for (size_t i = 0; i < outputs.size(); ++i) {
++    SCOPED_TRACE(base::StringPrintf("output %" PRIuS, i));
++    EXPECT_EQ(48000, outputs[i]->sample_rate());
++    EXPECT_EQ(2, outputs[i]->channel_count());
++    if (i == 0) {
++      EXPECT_LE(outputs[i]->frame_count(), 2048);
++    } else {
++      EXPECT_EQ(2048, outputs[i]->frame_count());
++    }
++  }
++}
++#endif
++
++#if BUILDFLAG(IS_WIN) && BUILDFLAG(USE_PROPRIETARY_CODECS)
++// Media Foundation must also decode the SBR layer: 48 kHz output that lasts as
++// long as the input. The AAC-LC core alone gives half the frames.
++TEST(MediaFoundationHeAacTest, Dawn_DecodesSbrLayer) {
++  base::test::SingleThreadTaskEnvironment task_environment;
++  base::win::ScopedCOMInitializer com_initializer;
++  std::unique_ptr<AudioDecoder> decoder = MediaFoundationAudioDecoder::Create();
++  ASSERT_TRUE(decoder);
++  const std::vector<scoped_refptr<AudioBuffer>> outputs =
++      DecodeDawnHeAac(decoder.get(), /*drain=*/true);
++
++  ASSERT_FALSE(outputs.empty());
++  int frames = 0;
++  for (size_t i = 0; i < outputs.size(); ++i) {
++    SCOPED_TRACE(base::StringPrintf("output %" PRIuS, i));
++    EXPECT_EQ(48000, outputs[i]->sample_rate());
++    EXPECT_EQ(2, outputs[i]->channel_count());
++    frames += outputs[i]->frame_count();
++  }
++  // Eight access units of 2048 frames, less the decoder delay.
++  EXPECT_GT(frames, 6 * 2048);
++  EXPECT_LE(frames, 8 * 2048);
++}
++#endif
++
+ TEST_P(AudioDecoderTest, Decode) {
+   ASSERT_NO_FATAL_FAILURE(Initialize());
+   Decode();
+@@ -808,17 +1062,29 @@ INSTANTIATE_TEST_SUITE_P(MediaCodec,
                                   ValuesIn(GetAndroidParams())));
  #endif
  
