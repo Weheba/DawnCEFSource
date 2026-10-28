@@ -277,3 +277,63 @@ index 0046348ef..1b0deb37b 100644
      outputs = [ "$root_out_dir/{{source_file_part}}" ]
    }
  }
+
+diff --git media/ffmpeg/ffmpeg_common.cc media/ffmpeg/ffmpeg_common.cc
+index 315fb73..49966b8 100644
+--- media/ffmpeg/ffmpeg_common.cc
++++ media/ffmpeg/ffmpeg_common.cc
+@@ -422,6 +422,17 @@ bool AVCodecContextToAudioDecoderConfig(const AVCodecContext* codec_context,
+       sample_format = kSampleFormatMpegHAudio;
+       break;
+ #endif
++#if BUILDFLAG(USE_PROPRIETARY_CODECS)
++    case AudioCodec::kAAC:
++      // Chromium-branded FFmpeg has no AAC decoder, so it never fills
++      // |sample_fmt| and the config would be rejected as invalid before any
++      // decoder is tried. The platform decoder (Media Foundation/AudioToolbox)
++      // picks its own output format; report what FFmpeg's AAC decoder would.
++      if (sample_format == kUnknownSampleFormat) {
++        sample_format = kSampleFormatPlanarF32;
++      }
++      break;
++#endif
+ 
+     default:
+       break;
+@@ -485,8 +496,9 @@ bool AVCodecContextToAudioDecoderConfig(const AVCodecContext* codec_context,
+ 
+   // Verify that AudioConfig.bytes_per_channel was calculated correctly for
+   // codecs that have |sample_fmt| set by FFmpeg.
+-  DCHECK_EQ(av_get_bytes_per_sample(codec_context->sample_fmt),
+-            config->bytes_per_channel());
++  DCHECK(codec_context->sample_fmt == AV_SAMPLE_FMT_NONE ||
++         av_get_bytes_per_sample(codec_context->sample_fmt) ==
++             config->bytes_per_channel());
+   return true;
+ }
+ 
+diff --git media/filters/ffmpeg_demuxer_unittest.cc media/filters/ffmpeg_demuxer_unittest.cc
+index 21057c1..a739b2f 100644
+--- media/filters/ffmpeg_demuxer_unittest.cc
++++ media/filters/ffmpeg_demuxer_unittest.cc
+@@ -1552,6 +1552,20 @@ TEST_F(FFmpegDemuxerTest, Read_Mp4_Media_Track_Info) {
+   EXPECT_EQ(video_track.language().value(), "und");
+ }
+ 
++// Dawn builds use Chromium-branded FFmpeg, which has no AAC decoder and never
++// fills the stream's sample format. The AAC track must still get a valid
++// config, so the platform decoder (Media Foundation / AudioToolbox) decodes it.
++TEST_F(FFmpegDemuxerTest, Dawn_Mp4AacTrackKeptForPlatformDecoder) {
++  CreateDemuxer("bear.mp4");
++  InitializeDemuxer();
++
++  DemuxerStream* audio = GetStream(DemuxerStream::AUDIO);
++  ASSERT_TRUE(audio);
++  const AudioDecoderConfig& config = audio->audio_decoder_config();
++  EXPECT_EQ(AudioCodec::kAAC, config.codec());
++  EXPECT_TRUE(config.IsValidConfig());
++}
++
+ TEST_F(FFmpegDemuxerTest, Read_Mp4_Multiple_Tracks) {
+   CreateDemuxer("bbb-320x240-2video-2audio.mp4");
+   InitializeDemuxer();
