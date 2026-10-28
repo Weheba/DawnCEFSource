@@ -232,10 +232,35 @@ for arg in media_use_openh264 rtc_use_h264; do
     exit 1
   fi
 done
-OPENH264_MATCHES="$(find "$FRAMEWORK_DIR" -type f \
-  \( -name "Chromium Embedded Framework" -o -name "*.dylib" \) -print0 |
-  xargs -0 env LC_ALL=C grep -a -o -E 'OpenH264|H264EncoderImpl|OpenH264VideoEncoder' |
-  sort | uniq -c || true)"
+# A binary passes only when grep reads it and finds nothing (exit 1). A read
+# error (exit 2) or a find error fails the gate instead of passing as clean.
+OPENH264_SCAN_LIST="$(mktemp)"
+if ! find "$FRAMEWORK_DIR" -type f \
+  \( -name "Chromium Embedded Framework" -o -name "*.dylib" \) -print0 > "$OPENH264_SCAN_LIST"; then
+  echo "The OpenH264 scan could not list the framework binaries." >&2
+  exit 1
+fi
+OPENH264_MATCHES=""
+OPENH264_SCANNED=0
+while IFS= read -r -d '' binary; do
+  OPENH264_SCANNED=$((OPENH264_SCANNED + 1))
+  scan_status=0
+  found="$(LC_ALL=C grep -a -o -E 'OpenH264|H264EncoderImpl|OpenH264VideoEncoder' "$binary" |
+    sort | uniq -c)" || scan_status=$?
+  case "$scan_status" in
+    0) OPENH264_MATCHES+="${binary#"$DISTRIB_DIR/"}:"$'\n'"$found"$'\n' ;;
+    1) ;;
+    *)
+      echo "The OpenH264 scan could not read ${binary#"$DISTRIB_DIR/"} (exit $scan_status)." >&2
+      exit 1
+      ;;
+  esac
+done < "$OPENH264_SCAN_LIST"
+rm -f "$OPENH264_SCAN_LIST"
+if [[ "$OPENH264_SCANNED" -eq 0 ]]; then
+  echo "The OpenH264 scan found no framework binaries to check." >&2
+  exit 1
+fi
 if [[ -n "$OPENH264_MATCHES" ]]; then
   echo "OpenH264 is linked into the framework:" >&2
   echo "$OPENH264_MATCHES" >&2
